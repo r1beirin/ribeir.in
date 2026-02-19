@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[HC] Poisoning - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <h1>[HackingClub] Poisoning Writeup</h1>
+                
+                <div class="box-info">
+                    <table>
+                        <tr>
+                            <td>Platform:</td>
+                            <td>HackingClub</td>
+                        </tr>
+                        <tr>
+                            <td>Machine:</td>
+                            <td>Poisoning</td>
+                        </tr>
+                        <tr>
+                            <td>Category:</td>
+                            <td>Web Exploitation</td>
+                        </tr>
+                        <tr>
+                            <td>OS:</td>
+                            <td>Linux</td>
+                        </tr>
+                        <tr>
+                            <td>Difficulty:</td>
+                            <td><span class="difficulty easy">Easy</span></td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="tags" style="margin-bottom: 30px;">
+                    <span class="tag">lfi</span>
+                    <span class="tag">log poisoning</span>
+                    <span class="tag">linux capabilities</span>
+                </div>
+
+                <img src="../../images/hackingclub/poisoning/index.png" alt="Poisoning Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>## Recon</h2>
+                
+                <p>Initially we make a port scan in the target. We have just 22 and 80 ports open.</p>
+
+                <pre><code>nmap -Pn -sV -sC -vvv 10.9.2.11</code></pre>
+
+                <img src="../../images/hackingclub/poisoning/nmap.webp" alt="Nmap" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Right away, we discovered two interesting files when accessing:</p>
+                <ul>
+                    <li><code>http://10.9.2.11/index.php</code></li>
+                    <li><code>http://10.9.2.11/page.php</code></li>
+                </ul>
+
+                <p>Given the suggestive name of the machine, I decided to perform parameter fuzzing using the <code>burp-parameter-names.txt</code> wordlist from SecList on the <code>index.php</code> file. FFUF indicated a size change in the response for the <code>page</code> parameter in <code>index.php</code>.</p>
+
+                <pre><code>ffuf -w '/usr/share/SecLists/Discovery/Web-Content/burp-parameter-names.txt' -u http://10.9.2.11/index.php?FUZZ=localhost -t 100 -fs 39277</code></pre>
+
+                <img src="../../images/hackingclub/poisoning/ffuf.webp" alt="FFUF" style="max-width: 100%; margin: 20px 0;">
+
+                <h2>## Exploitation</h2>
+                
+                <p>After that, I tested a traditional LFI with Path Traversal without filters, using Burp Suite, and noticed that the input was being directly reflected on the page.</p>
+                <img src="../../images/hackingclub/poisoning/exploitation1.webp" alt="Exploitation 1" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Since it is being directly reflected on the page, we can attempt Log Poisoning. We can test several directories to see if they are reflected on the server. If they are, we can potentially achieve RCE by injecting a payload into the <code>User-Agent</code> header during the request.</p>
+
+                <p>Tested directories include:</p>
+                <ul>
+                    <li><code>/var/log/apache2/access.log</code></li>
+                    <li><code>/var/log/httpd/access.log</code></li>
+                    <li><code>/var/log/auth.log</code></li>
+                </ul>
+
+                <p>After testing, we found that <code>/var/log/apache2/access.log</code> is being directly reflected on the page. We can then inject the payload into the User-Agent header to achieve remote code execution (RCE). After, we just get reverse shell on target.</p>
+                <img src="../../images/hackingclub/poisoning/exploitation2.webp" alt="Exploitation 2" style="max-width: 100%; margin: 20px 0;">
+                <img src="../../images/hackingclub/poisoning/exploitation3.webp" alt="Exploitation 3" style="max-width: 100%; margin: 20px 0;">
+
+                <h2>## Post Exploitation</h2>
+                
+                <p>After obtaining the reverse shell, we found that the user's flag was marked as 'fl4g.txt'. This was the first flag we found. At this point, I spent a considerable amount of time looking for something interesting to perform privilege escalation, such as SUID, binary files, etc., but couldn't find anything relevant.</p>
+
+                <p>I then decided to use linpeas to assist me with privilege escalation on the server. After running linpeas, it alerted me to a potential vector involving Linux Capabilities.</p>
+                <img src="../../images/hackingclub/poisoning/linpeas.jpg" alt="Linpeas" style="max-width: 100%; margin: 20px 0;">
+
+                <p>Thus, we discovered that the Python binary version 3.6.9 is set with capabilities. We can exploit this for privilege escalation. By running the following Python script, we can set the UID to 0 (root):</p>
+
+                <pre><code>python3 -c 'import os; os.setuid(0); os.system("/bin/bash")'</code></pre>
+
+                <p>This allowed us to escalate privileges and obtain flag2 from the machine :)</p>
+                <img src="../../images/hackingclub/poisoning/root.webp" alt="Root" style="max-width: 100%; margin: 20px 0;">
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackingClub // Poisoning</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

