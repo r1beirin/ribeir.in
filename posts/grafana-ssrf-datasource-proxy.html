@@ -34,7 +34,7 @@
                     on the Grafana OSS codebase, I identified a <strong>full read Server-Side Request Forgery
                     (SSRF)</strong> vulnerability/misconfiguration in the data source proxy. An authenticated user with data source
                     creation permissions can configure a data source pointing to any internal URL, and the proxy
-                    returns the <strong>complete response body</strong> &mdash; making it trivial to steal cloud
+                    returns the <strong>complete response body</strong> making it trivial to steal cloud
                     metadata credentials, read internal APIs, and map the internal network.
                 </p>
 
@@ -63,7 +63,7 @@
                     environment (AWS, GCP, Azure) with the default configuration is vulnerable to SSRF from any
                     user that can create data sources. Most organizations deploying Grafana don't know that this
                     whitelist exists or that it needs to be configured. The secure-by-default principle says that
-                    the default configuration should be safe &mdash; and this one isn't.
+                    the default configuration should be safe, and this one isn't.
                 </p>
 
                 <p>
@@ -96,8 +96,8 @@ func (*OSSDataSourceRequestURLValidator) Validate(string) error {
 
                 <p>
                     This is the entire file. There is no IP range check, no hostname check, no protocol check.
-                    The Grafana Enterprise build replaces this with actual validation logic, but the OSS version
-                    &mdash; which is what most people deploy &mdash; has nothing.
+                    The Grafana Enterprise build replaces this with actual validation logic, but the OSS version,
+                    which is what most people deploy, has nothing.
                 </p>
 
                 <h3>### Problem 2: Empty Whitelist = Allow Everything</h3>
@@ -196,7 +196,7 @@ func (proxy *DataSourceProxy) HandleRequest() {
                 <h2>## Prerequisites</h2>
 
                 <ul>
-                    <li><strong>Grafana OSS</strong> (any version &mdash; the no-op validator has existed since the OSS/Enterprise split)</li>
+                    <li><strong>Grafana OSS</strong> (any version, the no-op validator has existed since the OSS/Enterprise split)</li>
                     <li><strong>Default configuration</strong> (<code>data_source_proxy_whitelist</code> not set, which is the default)</li>
                     <li><strong>Admin role</strong> (by default) or any user with <code>datasources:create</code> and
                         <code>datasources:query</code> RBAC permissions</li>
@@ -353,7 +353,7 @@ curl: (6) Could not resolve host: internal-service</code></pre>
 
                 <p>
                     Register a new Prometheus data source with the URL set to the internal service.
-                    The data source type doesn't matter much &mdash; the proxy will forward any request
+                    The data source type doesn't matter much, the proxy will forward any request
                     regardless of type.
                 </p>
 
