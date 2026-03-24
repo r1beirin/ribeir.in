@@ -32,7 +32,7 @@
                     Grafana is the most popular open-source monitoring and observability platform, used by
                     thousands of organizations to visualize metrics, logs, and traces. During security research
                     on the Grafana OSS codebase, I identified a <strong>full read Server-Side Request Forgery
-                    (SSRF)</strong> vulnerability in the data source proxy. An authenticated user with data source
+                    (SSRF)</strong> vulnerability/misconfiguration in the data source proxy. An authenticated user with data source
                     creation permissions can configure a data source pointing to any internal URL, and the proxy
                     returns the <strong>complete response body</strong> &mdash; making it trivial to steal cloud
                     metadata credentials, read internal APIs, and map the internal network.
