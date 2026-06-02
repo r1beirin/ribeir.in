@@ -19,6 +19,27 @@
             <ul class="post-list">
                 <li class="post-item">
                     <div class="post-title">
+                        <a href="posts/mathjs-sandbox-escape-rce.html">Escaping the mathjs Sandbox: From math.evaluate() to Remote Code Execution</a>
+                    </div>
+                    <div class="post-meta">
+                        [2026-06-01] | Category: Security Research | Reading time: 12 min
+                    </div>
+                    <div class="post-excerpt">
+                        A bug bounty program led me into the internals of mathjs 11.8.2. Two property reads in the
+                        FunctionNode and SymbolNode compilers skip the library's own safe-property allow-list, so an
+                        evaluated constructor() expression reaches the JavaScript Function constructor and turns
+                        math.evaluate() into remote code execution. Root cause, the silent 11.9.1 fix, and a reproducible
+                        local proof of concept.
+                    </div>
+                    <div class="tags">
+                        <span class="tag">rce</span>
+                        <span class="tag">mathjs</span>
+                        <span class="tag">sandbox escape</span>
+                        <span class="tag">code injection</span>
+                    </div>
+                </li>
+                <li class="post-item">
+                    <div class="post-title">
                         <a href="posts/grafana-ssrf-datasource-proxy.html">Grafana OSS - Full Read SSRF via Data Source Proxy</a>
                     </div>
                     <div class="post-meta">
