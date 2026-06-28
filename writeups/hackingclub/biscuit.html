@@ -15,34 +15,24 @@
 
         <main>
             <article class="content">
-                <h1>[HackingClub] Biscuit Writeup</h1>
-                
-                <div class="box-info">
-                    <table>
-                        <tr>
-                            <td>Platform:</td>
-                            <td>HackingClub</td>
-                        </tr>
-                        <tr>
-                            <td>Machine:</td>
-                            <td>Biscuit</td>
-                        </tr>
-                        <tr>
-                            <td>Category:</td>
-                            <td>Web Exploitation</td>
-                        </tr>
-                        <tr>
-                            <td>OS:</td>
-                            <td>Linux</td>
-                        </tr>
-                        <tr>
-                            <td>Difficulty:</td>
-                            <td><span class="difficulty medium">Medium</span></td>
-                        </tr>
-                    </table>
+                <a class="back-link" href="../hackingclub.html">← hackingclub</a>
+
+                <div class="article-head">
+                    <span class="badge badge-hc">HC</span>
+                    <span class="diff diff-medium">medium</span>
+                    <span class="article-cat">· linux / web</span>
                 </div>
 
-                <div class="tags" style="margin-bottom: 30px;">
+                <h1>Biscuit</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackingClub</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Biscuit</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
                     <span class="tag">type juggling</span>
                     <span class="tag">insecure desserialization</span>
                     <span class="tag">format string</span>
@@ -50,7 +40,7 @@
 
                 <img src="../../images/hackingclub/biscuit/index.png" alt="Biscuit Machine" style="max-width: 100%; margin-bottom: 20px;">
 
-                <h2>## Recon</h2>
+                <h2>Recon</h2>
                 
                 <p>In the beginning, I used <code>nmap</code> with the following parameters. I found only ports 22, 80, and 111 open (it appears to be a web application in PHP running on Linux).</p>
 
@@ -113,7 +103,7 @@ class                   [Status: 301, Size: 234, Words: 14, Lines: 8, Duration: 
                 <p>So, I decided to verify the <code>/class</code> path and found something. This directory was exposed with a file named <code>Auth.class.php</code>. I tried to access the file to view its source code, but nothing happened.</p>
                 <img src="../../images/hackingclub/biscuit/class_directoryexposed.png" alt="Directory Exposed" style="max-width: 100%; margin: 20px 0;">
 
-                <h2>## Exploitation</h2>
+                <h2>Exploitation</h2>
                 
                 <p>Here, we have many vectors to explore. So, I decided to start with the web application. The first thing that came to mind was to explore the request using Type Juggling, as the backend is running PHP.</p>
 
@@ -212,7 +202,7 @@ ZXhwaXJhdGlvbiI6MTczNTI0NjM2MX0K</code></pre>
 
                 <img src="../../images/hackingclub/biscuit/reverse_shell.png" alt="Reverse Shell" style="max-width: 100%; margin: 20px 0;">
 
-                <h2>## Post Exploitation</h2>
+                <h2>Post Exploitation</h2>
                 
                 <p>Here, I found some things with <code>linpeas</code>, but I wasn't successful with that. So, I decided to perform the recon manually.</p>
 
@@ -261,9 +251,6 @@ User apache may run the following commands on ip-172-16-2-123:
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../../"></div>

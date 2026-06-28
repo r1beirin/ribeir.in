@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <link rel="canonical" href="https://ribeir.in/writeups.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CTF writeups by ribeirin.">
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
-    <title>Writeups - ribeir.in</title>
+    <title>writeups - ribeir.in</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -14,23 +15,27 @@
         <div data-component="header" data-base-path=""></div>
 
         <main>
-            <div class="section-header">
-                <h1>/// CTF WRITEUPS</h1>
-            </div>
+            <h1 class="page-title">ctf writeups</h1>
+            <p class="page-subtitle">pick a platform to browse</p>
 
-            <p style="margin-bottom: 20px;">Select a category to view writeups:</p>
+            <div class="platform-cards">
+                <a class="platform-card" href="writeups/hackthebox.html">
+                    <span class="badge badge-htb">HTB</span>
+                    <div class="card-body">
+                        <div class="card-name">HackTheBox</div>
+                        <div class="card-desc">Machines and Challenges from HackTheBox platform</div>
+                    </div>
+                    <div class="card-count">01 →</div>
+                </a>
 
-            <!-- Categories -->
-            <div class="writeup-categories">
-                <div class="category-card">
-                    <h3><a href="writeups/hackthebox.html">HackTheBox</a></h3>
-                    <p>Machines and Challenges from HackTheBox platform</p>
-                </div>
-
-                <div class="category-card">
-                    <h3><a href="writeups/hackingclub.html">HackingClub</a></h3>
-                    <p>Machines from HackingClub platform</p>
-                </div>
+                <a class="platform-card" href="writeups/hackingclub.html">
+                    <span class="badge badge-hc">HC</span>
+                    <div class="card-body">
+                        <div class="card-name">HackingClub</div>
+                        <div class="card-desc">Machines from HackingClub platform</div>
+                    </div>
+                    <div class="card-count">10 →</div>
+                </a>
             </div>
         </main>
 

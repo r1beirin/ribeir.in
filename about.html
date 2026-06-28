@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <link rel="canonical" href="https://ribeir.in/about.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="About ribeirin — penetration tester & ctf player.">
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
-    <title>About - ribeir.in</title>
+    <title>about - ribeir.in</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -14,39 +15,41 @@
         <div data-component="header" data-base-path=""></div>
 
         <main>
-            <div class="section-header">
-                <h1>/// ABOUT ME</h1>
-            </div>
-
-            <div class="content">
-                <h2>$ whoami</h2>
-                
-                <div class="profile-section">
-                    <img src="images/gaules_anao.jpeg" alt="Profile picture" class="profile-img">
-                    <p>
-                        Hey there, I'm <strong>ribeirin</strong>, a penetration tester and ctf player at <a href="https://acch.dog/">ACCH</a>, 
-                        also I like to research vulnerabilities in my free time and make some bug bounty XD.
-                    </p>
+            <section class="about-head">
+                <img src="images/gaules_anao.jpeg" alt="ribeirin" class="about-photo">
+                <div>
+                    <h1 class="about-bio-title">ribeirin</h1>
+                    <p class="about-bio">Hey there, I'm <strong>ribeirin</strong>, a penetration tester and ctf player at <a href="https://acch.dog/" target="_blank" rel="noopener">ACCH</a>, also I like to research vulnerabilities in my free time and make some bug bounty XD.</p>
                 </div>
+            </section>
 
-                <h2>$ cat contact.txt</h2>
-                
-                <p>Want to get in touch? Feel free to reach out:</p>
-                
-                <ul>
-                    <li><strong>GitHub:</strong> <a href="https://github.com/r1beirin">github.com/r1beirin</a></li>
-                    <li><strong>Linkedin:</strong> <a href="https://www.linkedin.com/in/mateusriibeiro/">@ribeirin</a></li>
-                </ul>
+            <section>
+                <div class="section-label">$ cat contact</div>
+                <div class="contact-rows">
+                    <div class="contact-row">
+                        <span class="contact-key">github</span>
+                        <a class="contact-val" href="https://github.com/r1beirin" target="_blank" rel="noopener">github.com/r1beirin</a>
+                    </div>
+                    <div class="contact-row">
+                        <span class="contact-key">linkedin</span>
+                        <a class="contact-val" href="https://www.linkedin.com/in/mateusriibeiro/" target="_blank" rel="noopener">@ribeirin</a>
+                    </div>
+                </div>
+            </section>
 
-                <h2>$ cat cves.txt</h2>
-                
-                <p>Here are my cves:</p>
-                
-                <ul>
-                    <li><a href="https://ribeir.in/posts/cve-2026-22248-glpi-rce.html">CVE-2026-22248 - RCE in GLPI</a></li>
-                    <li><a href="https://github.com/mautic/mautic/security/advisories/GHSA-jmv8-8j9j-rcpc">CVE-2026-9557 - SSRF in Mautic</a></li>
-                </ul>
-            </div>
+            <section style="margin-top: 56px;">
+                <div class="section-label">$cat cves</div>
+                <div class="contact-rows">
+                    <div class="contact-row">
+                        <span class="contact-key">CVE-2026-22248</span>
+                        <a class="contact-val" href="https://ribeir.in/posts/cve-2026-22248-glpi-rce.html">RCE in GLPI</a>
+                    </div>
+                    <div class="contact-row">
+                        <span class="contact-key">CVE-2026-9557</span>
+                        <a class="contact-val" href="https://github.com/mautic/mautic/security/advisories/GHSA-jmv8-8j9j-rcpc" target="_blank" rel="noopener">SSRF in Mautic</a>
+                    </div>
+                </div>
+            </section>
         </main>
 
         <div data-component="footer" data-base-path=""></div>

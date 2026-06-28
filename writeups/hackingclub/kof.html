@@ -15,34 +15,24 @@
 
         <main>
             <article class="content">
-                <h1>[HackingClub] KOF Writeup</h1>
-                
-                <div class="box-info">
-                    <table>
-                        <tr>
-                            <td>Platform:</td>
-                            <td>HackingClub</td>
-                        </tr>
-                        <tr>
-                            <td>Machine:</td>
-                            <td>KOF</td>
-                        </tr>
-                        <tr>
-                            <td>Category:</td>
-                            <td>Web Exploitation</td>
-                        </tr>
-                        <tr>
-                            <td>OS:</td>
-                            <td>Linux (Docker)</td>
-                        </tr>
-                        <tr>
-                            <td>Difficulty:</td>
-                            <td><span class="difficulty easy">Easy</span></td>
-                        </tr>
-                    </table>
+                <a class="back-link" href="../hackingclub.html">← hackingclub</a>
+
+                <div class="article-head">
+                    <span class="badge badge-hc">HC</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux (docker) / web</span>
                 </div>
 
-                <div class="tags" style="margin-bottom: 30px;">
+                <h1>KOF</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackingClub</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">KOF</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux (Docker)</span></div>
+                </div>
+
+                <div class="tags">
                     <span class="tag">sql-injection</span>
                     <span class="tag">hash crack</span>
                     <span class="tag">command injection</span>
@@ -52,7 +42,7 @@
 
                 <img src="../../images/hackingclub/kof/index.png" alt="KOF Machine" style="max-width: 100%; margin-bottom: 20px;">
 
-                <h2>## Recon</h2>
+                <h2>Recon</h2>
                 
                 <p>In the beginning, I used NMAP with the following parameters. I found only ports 22 and 8000 open (it seems to be a Django application running on Linux).</p>
 
@@ -87,7 +77,7 @@ http://172.16.11.225:8000/dashboard/</code></pre>
                 <img src="../../images/hackingclub/kof/sqlmap_q1.png" alt="SQLMap 1" style="max-width: 100%; margin: 20px 0;">
                 <img src="../../images/hackingclub/kof/sqlmap_q2.png" alt="SQLMap 2" style="max-width: 100%; margin: 20px 0;">
 
-                <h2>## Exploitation</h2>
+                <h2>Exploitation</h2>
                 
                 <p>We can include the <code>--dbms sqlite</code> flag to specify that the database in use is SQLite.</p>
 
@@ -147,7 +137,7 @@ pbkdf2_sha256$720000$uPmPwj655iBMXMnJkLwRfZ$yqgjRdOIa3GV9uFMTFSR6RLTRfz/PQxQ6u31
                 <img src="../../images/hackingclub/kof/shell_request.png" alt="Shell Request" style="max-width: 100%; margin: 20px 0;">
                 <img src="../../images/hackingclub/kof/shell.png" alt="Shell" style="max-width: 100%; margin: 20px 0;">
 
-                <h2>## Post exploitation</h2>
+                <h2>Post exploitation</h2>
                 
                 <p>At first glance, using <code>ps aux</code>, I identified that we are in a Docker environment. I couldn't find the first flag, meaning the first objective is to escalate to root, and the second is to perform a Docker escape.</p>
 
@@ -168,7 +158,7 @@ bash -p</code></pre>
 
                 <p>By exploiting this, we will escalate privileges to root in order to retrieve the first flag in <code>/root</code>.</p>
 
-                <h2>## Docker escape/breakout</h2>
+                <h2>Docker escape/breakout</h2>
                 
                 <p>To perform the Docker breakout/escape, I will use the <code>/proc</code> endpoint. First, I need to retrieve the Docker process ID by running <code>ps aux | grep docker</code>.</p>
                 <img src="../../images/hackingclub/kof/id_proc.png" alt="ID Process" style="max-width: 100%; margin: 20px 0;">
@@ -192,9 +182,6 @@ bash -p</code></pre>
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../../"></div>

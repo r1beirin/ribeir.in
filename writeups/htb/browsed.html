@@ -15,41 +15,31 @@
 
         <main>
             <article class="content">
-                <h1>[HackTheBox] Browsed Writeup</h1>
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
 
-                <div class="box-info">
-                    <table>
-                        <tr>
-                            <td>Platform:</td>
-                            <td>HackTheBox</td>
-                        </tr>
-                        <tr>
-                            <td>Machine:</td>
-                            <td>Browsed</td>
-                        </tr>
-                        <tr>
-                            <td>Category:</td>
-                            <td>Web Exploitation</td>
-                        </tr>
-                        <tr>
-                            <td>OS:</td>
-                            <td>Linux</td>
-                        </tr>
-                        <tr>
-                            <td>Difficulty:</td>
-                            <td><span class="difficulty medium">Medium</span></td>
-                        </tr>
-                    </table>
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-medium">medium</span>
+                    <span class="article-cat">· linux / web</span>
                 </div>
 
-                <div class="tags" style="margin-bottom: 30px;">
+                <h1>Browsed</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Browsed</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
                     <span class="tag">chrome malicious extension</span>
                     <span class="tag">pyc poisoning via sudo</span>
                 </div>
 
                 <img src="../../images/hackthebox/browsed/index.png" alt="Browsed Machine" style="max-width: 100%; margin-bottom: 20px;">
 
-                <h2>## Recon</h2>
+                <h2>Recon</h2>
 
                 <p>In the beginning, I used <code>nmap</code> with the following parameters. I found ports 22 and 80 open (it appears to be a web application running on nginx with Ubuntu Linux).</p>
 
@@ -75,7 +65,7 @@ Nmap done: 1 IP address (1 host up) scanned in 47.31 seconds</code></pre>
                 <p>The web application reveals a company app focused on Chrome Extensions Development. It has an interesting extension upload feature (the developer uses it and the app gives us feedback), and the extension must be inside a zip file.</p>
                 <img src="../../images/hackthebox/browsed/recon_app.png" alt="Recon App" style="max-width: 100%; margin: 20px 0;">
 
-                <h2>## Exploitation</h2>
+                <h2>Exploitation</h2>
 
                 <p>So basically I think this extension upload feature is the foothold. First, I found this Chrome extension to upload and test the feature: <a href="https://github.com/theypsilon/PHPView-for-Chrome/tree/master/release">PHPView-for-Chrome</a>. In the output, I found the following message:</p>
 
@@ -169,7 +159,7 @@ lrwxrwxrwx 1 larry larry    9 Aug 17  2025 .python_history -&gt; /dev/null
 drwx------ 2 larry larry 4096 Jan  6 10:28 .ssh
 -rw-r----- 1 root  larry   33 Apr 13 19:18 user.txt</code></pre>
 
-                <h2>## Post Exploitation</h2>
+                <h2>Post Exploitation</h2>
 
                 <p>After obtaining the shell, running <code>sudo -l</code> shows the following permission:</p>
 
@@ -253,9 +243,6 @@ uid=0(root) gid=0(root) groups=0(root)</code></pre>
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../../"></div>

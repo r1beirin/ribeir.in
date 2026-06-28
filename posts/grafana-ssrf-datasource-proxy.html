@@ -15,13 +15,13 @@
 
         <main>
             <article class="content">
+                <a class="back-link" href="../posts.html">← back to posts</a>
+
+                <div class="article-meta"><span class="am-tag">ssrf</span> · 2026-03-24 · 15 min read</div>
+
                 <h1>Grafana OSS - Full Read SSRF via Data Source Proxy</h1>
 
-                <div class="post-meta" style="margin-bottom: 30px;">
-                    [2026-03-24] | Author: ribeirin | Reading time: 15 min
-                </div>
-
-                <div class="tags" style="margin-bottom: 30px;">
+                <div class="tags">
                     <span class="tag">ssrf</span>
                     <span class="tag">grafana</span>
                     <span class="tag">data source proxy</span>
@@ -29,7 +29,7 @@
                     <span class="tag">misconfiguration</span>
                 </div>
 
-                <h2>## Abstract</h2>
+                <h2>Abstract</h2>
 
                 <p>
                     Grafana is the most popular open-source monitoring and observability platform, used by
@@ -47,7 +47,7 @@
                     is <strong>empty by default</strong>, which causes the whitelist check to be completely skipped.
                 </p>
 
-                <h2>## Is This a Vulnerability or a Misconfiguration?</h2>
+                <h2>Is This a Vulnerability or a Misconfiguration?</h2>
 
                 <p>
                     This is a fair question. The answer is: <strong>it's both</strong>.
@@ -74,9 +74,9 @@
                     network services from the Grafana server's network context</strong>.
                 </p>
 
-                <h2>## The Problem in Code</h2>
+                <h2>The Problem in Code</h2>
 
-                <h3>### Problem 1: No-op URL Validator (OSS)</h3>
+                <h3>Problem 1: No-op URL Validator (OSS)</h3>
 
                 <p>
                     The Grafana OSS build includes a URL validator that does literally nothing. Both the
@@ -103,7 +103,7 @@ func (*OSSDataSourceRequestURLValidator) Validate(string) error {
                     which is what most people deploy, has nothing.
                 </p>
 
-                <h3>### Problem 2: Empty Whitelist = Allow Everything</h3>
+                <h3>Problem 2: Empty Whitelist = Allow Everything</h3>
 
                 <p>
                     The data source proxy has a whitelist check, but its logic is inverted for the default case:
@@ -139,7 +139,7 @@ data_source_proxy_whitelist =</code></pre>
                     Empty. Out of the box, every Grafana OSS instance allows proxying to any host.
                 </p>
 
-                <h3>### Problem 3: URL Validation Only Checks Format</h3>
+                <h3>Problem 3: URL Validation Only Checks Format</h3>
 
                 <p>
                     When creating a data source, the URL goes through <code>ValidateURL()</code>, but this
@@ -161,7 +161,7 @@ func ValidateURL(typeName, urlStr string) (*url.URL, error) {
     return u, nil
 }</code></pre>
 
-                <h3>### The Proxy: Full Reverse Proxy with Response Passthrough</h3>
+                <h3>The Proxy: Full Reverse Proxy with Response Passthrough</h3>
 
                 <p>
                     The data source proxy is a full HTTP reverse proxy. It forwards the request and returns the
@@ -196,7 +196,7 @@ func (proxy *DataSourceProxy) HandleRequest() {
                     gets the complete HTTP response from the internal service, including headers and body.
                 </p>
 
-                <h2>## Prerequisites</h2>
+                <h2>Prerequisites</h2>
 
                 <ul>
                     <li><strong>Grafana OSS</strong> (any version, the no-op validator has existed since the OSS/Enterprise split)</li>
@@ -213,18 +213,18 @@ func (proxy *DataSourceProxy) HandleRequest() {
                     This issue is specific to Grafana OSS.
                 </p>
 
-                <h2>## Lab Setup</h2>
+                <h2>Lab Setup</h2>
 
                 <p>
                     The following Docker Compose lab demonstrates the vulnerability with a simulated internal
                     service containing sensitive data.
                 </p>
 
-                <h3>### 1. Create the project structure</h3>
+                <h3>1. Create the project structure</h3>
 
                 <pre><code>mkdir grafana-ssrf-lab && cd grafana-ssrf-lab</code></pre>
 
-                <h3>### 2. Create <code>internal_service.py</code></h3>
+                <h3>2. Create <code>internal_service.py</code></h3>
 
                 <p>
                     This simulates an internal service (cloud metadata endpoint, secret manager, internal API)
@@ -289,7 +289,7 @@ if __name__ == '__main__':
     print('Internal service listening on port 8080...', flush=True)
     HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()</code></pre>
 
-                <h3>### 3. Create <code>docker-compose.yml</code></h3>
+                <h3>3. Create <code>docker-compose.yml</code></h3>
 
                 <pre><code>services:
   grafana:
@@ -319,7 +319,7 @@ networks:
   lab-network:
     driver: bridge</code></pre>
 
-                <h3>### 4. Start the lab</h3>
+                <h3>4. Start the lab</h3>
 
                 <pre><code>$ docker compose up -d
 [+] Running 3/3
@@ -327,7 +327,7 @@ networks:
  ✔ Container internal-service            Started
  ✔ Container grafana-lab                 Started</code></pre>
 
-                <h3>### 5. Verify the setup</h3>
+                <h3>5. Verify the setup</h3>
 
                 <pre><code># Grafana is up
 $ curl -s http://localhost:3000/api/health | jq .
@@ -350,9 +350,9 @@ $ docker exec grafana-lab curl -s http://internal-service:8080/
 $ curl -s --max-time 2 http://internal-service:8080/ 2>&1
 curl: (6) Could not resolve host: internal-service</code></pre>
 
-                <h2>## Exploitation</h2>
+                <h2>Exploitation</h2>
 
-                <h3>### Step 1: Create a data source pointing to the internal service</h3>
+                <h3>Step 1: Create a data source pointing to the internal service</h3>
 
                 <p>
                     Register a new Prometheus data source with the URL set to the internal service.
@@ -381,7 +381,7 @@ Data Source ID: 2 / UID: fe4k7z1234abc</code></pre>
                     and the empty whitelist allows everything.
                 </p>
 
-                <h3>### Step 2: Read internal service data via the proxy</h3>
+                <h3>Step 2: Read internal service data via the proxy</h3>
 
                 <p>
                     Now use the data source proxy endpoint. The path after <code>/proxy/{id}/</code> is
@@ -430,7 +430,7 @@ $ curl -s -u admin:admin \
   "database": "customers"
 }</code></pre>
 
-                <h3>### Step 3: Same attack via UID-based endpoint</h3>
+                <h3>Step 3: Same attack via UID-based endpoint</h3>
 
                 <pre><code># Works with UID too
 $ curl -s -u admin:admin \
@@ -443,7 +443,7 @@ $ curl -s -u admin:admin \
   ...
 }</code></pre>
 
-                <h3>### Step 4: Internal port scanning</h3>
+                <h3>Step 4: Internal port scanning</h3>
 
                 <p>
                     Open ports return the service response (HTTP 200), closed ports return HTTP 502 from
@@ -497,7 +497,7 @@ Port 9090: closed (HTTP 502)
 Port 9200: closed (HTTP 502)
 Port 27017: closed (HTTP 502)</code></pre>
 
-                <h2>## Why This is Dangerous</h2>
+                <h2>Why This is Dangerous</h2>
 
                 <p>
                     Unlike blind SSRF where the attacker can only observe side-channel information (timing,
@@ -507,9 +507,9 @@ Port 27017: closed (HTTP 502)</code></pre>
 
                 <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
                     <tr>
-                        <th style="text-align: left; padding: 10px; border-bottom: 1px solid var(--text-dim);">Aspect</th>
-                        <th style="text-align: left; padding: 10px; border-bottom: 1px solid var(--text-dim);">Blind SSRF</th>
-                        <th style="text-align: left; padding: 10px; border-bottom: 1px solid var(--text-dim);">This (Full Read SSRF)</th>
+                        <th>Aspect</th>
+                        <th>Blind SSRF</th>
+                        <th>This (Full Read SSRF)</th>
                     </tr>
                     <tr>
                         <td style="padding: 10px;">Response visible</td>
@@ -538,7 +538,7 @@ Port 27017: closed (HTTP 502)</code></pre>
                     </tr>
                 </table>
 
-                <h2>## Real-World Impact</h2>
+                <h2>Real-World Impact</h2>
 
                 <ul>
                     <li>
@@ -565,7 +565,7 @@ Port 27017: closed (HTTP 502)</code></pre>
                     </li>
                 </ul>
 
-                <h2>## Affected Versions</h2>
+                <h2>Affected Versions</h2>
 
                 <ul>
                     <li>All Grafana OSS versions (the no-op validator has existed since the OSS/Enterprise split)</li>
@@ -573,7 +573,7 @@ Port 27017: closed (HTTP 502)</code></pre>
                     <li>Grafana Enterprise is <strong>not affected</strong> (has actual URL validators)</li>
                 </ul>
 
-                <h2>## Mitigation</h2>
+                <h2>Mitigation</h2>
 
                 <p>
                     If you're running Grafana OSS, you can mitigate this by configuring the data source
@@ -617,7 +617,7 @@ transport.DialContext = func(ctx context.Context, network, addr string) (net.Con
                     <li>Add a warning in the Grafana UI when a data source URL resolves to a private IP range</li>
                 </ol>
 
-                <h2>## References</h2>
+                <h2>References</h2>
 
                 <ul>
                     <li><a href="https://grafana.com/docs/grafana/latest/datasources/" target="_blank">Grafana - Data sources documentation</a></li>
@@ -637,9 +637,6 @@ transport.DialContext = func(ctx context.Context, network, addr string) (net.Con
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../posts.html">&lt;&lt; Back to Posts</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../"></div>

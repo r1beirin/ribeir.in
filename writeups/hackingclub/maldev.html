@@ -15,34 +15,24 @@
 
         <main>
             <article class="content">
-                <h1>[HackingClub] Maldev Writeup</h1>
-                
-                <div class="box-info">
-                    <table>
-                        <tr>
-                            <td>Platform:</td>
-                            <td>HackingClub</td>
-                        </tr>
-                        <tr>
-                            <td>Machine:</td>
-                            <td>Maldev</td>
-                        </tr>
-                        <tr>
-                            <td>Category:</td>
-                            <td>Web Exploitation</td>
-                        </tr>
-                        <tr>
-                            <td>OS:</td>
-                            <td>Linux</td>
-                        </tr>
-                        <tr>
-                            <td>Difficulty:</td>
-                            <td><span class="difficulty easy">Easy</span></td>
-                        </tr>
-                    </table>
+                <a class="back-link" href="../hackingclub.html">← hackingclub</a>
+
+                <div class="article-head">
+                    <span class="badge badge-hc">HC</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
                 </div>
 
-                <div class="tags" style="margin-bottom: 30px;">
+                <h1>Maldev</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackingClub</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Maldev</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
                     <span class="tag">git exposed</span>
                     <span class="tag">type juggling</span>
                     <span class="tag">lfi</span>
@@ -51,7 +41,7 @@
 
                 <img src="../../images/hackingclub/maldev/index.png" alt="Maldev Machine" style="max-width: 100%; margin-bottom: 20px;">
 
-                <h2>## Recon</h2>
+                <h2>Recon</h2>
                 
                 <p>Initially we make a port scan in the target. We have just 22 and 80 ports open.</p>
 
@@ -117,7 +107,7 @@ by Ben "epi" Risher 🤓                 ver: 2.10.4
                 <img src="../../images/hackingclub/maldev/indexphp.png" alt="Index PHP" style="max-width: 100%; margin: 20px 0;">
                 <img src="../../images/hackingclub/maldev/git.png" alt="Git" style="max-width: 100%; margin: 20px 0;">
 
-                <h2>## Exploitation</h2>
+                <h2>Exploitation</h2>
                 
                 <p>To exploit the exposed Git, we will use <code>git-dumper</code> to extract the repository files and analyze the log.</p>
 
@@ -365,7 +355,7 @@ Payload: Tzo0OiJQYWdlIjoxOntzOjQ6InBhZ2UiO3M6MjU6ImFzc2V0cy9pbWFnZXMvcHJvZmlsZS5
                 <pre><code>www-data@ip-172-16-1-229:/var/www/html/public$ id
 uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></pre>
 
-                <h2>## Post Exploitation</h2>
+                <h2>Post Exploitation</h2>
                 
                 <p>Running <code>linpeas</code>, we found that we have write permissions on <code>/usr/local/sbin</code> and that a <code>run-parts</code> cronjob is running. We noticed that the first path the cron will look for is <code>/usr/local/sbin</code>, allowing us to create a malicious binary for privilege escalation. References: <a href="https://medium.com/swlh/privilege-escalation-via-cron-812a9da9cf1a">Privilege Escalation via Cron</a></p>
 
@@ -395,9 +385,6 @@ www-data@ip-172-16-1-229:/usr/local/sbin$ cat run-parts
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../../"></div>

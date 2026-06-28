@@ -15,34 +15,24 @@
 
         <main>
             <article class="content">
-                <h1>[HackingClub] Techscope Writeup</h1>
-                
-                <div class="box-info">
-                    <table>
-                        <tr>
-                            <td>Platform:</td>
-                            <td>HackingClub</td>
-                        </tr>
-                        <tr>
-                            <td>Machine:</td>
-                            <td>Techscope</td>
-                        </tr>
-                        <tr>
-                            <td>Category:</td>
-                            <td>Web Exploitation</td>
-                        </tr>
-                        <tr>
-                            <td>OS:</td>
-                            <td>Linux</td>
-                        </tr>
-                        <tr>
-                            <td>Difficulty:</td>
-                            <td><span class="difficulty hard">Hard</span></td>
-                        </tr>
-                    </table>
+                <a class="back-link" href="../hackingclub.html">← hackingclub</a>
+
+                <div class="article-head">
+                    <span class="badge badge-hc">HC</span>
+                    <span class="diff diff-hard">hard</span>
+                    <span class="article-cat">· linux / web</span>
                 </div>
 
-                <div class="tags" style="margin-bottom: 30px;">
+                <h1>Techscope</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackingClub</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Techscope</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
                     <span class="tag">git exposed</span>
                     <span class="tag">php object injection</span>
                     <span class="tag">yii2 framework</span>
@@ -52,7 +42,7 @@
 
                 <img src="../../images/hackingclub/techscope/index.png" alt="Techscope Machine" style="max-width: 100%; margin-bottom: 20px;">
 
-                <h2>## Recon</h2>
+                <h2>Recon</h2>
                 
                 <p>In the beginning, I used <code>nmap</code> with the following parameters. I found ports 22 and 80 open (it appears to be a PHP application running on Apache with Ubuntu Linux).</p>
 
@@ -137,7 +127,7 @@ robots.txt              [Status: 200, Size: 23, Words: 2, Lines: 2, Duration: 19
 
                 <p>After analyzing the dumped files, I identified that this is a <strong>Yii2 PHP Framework</strong> application. Yii2 is a high-performance PHP framework that uses an MVC architecture. The framework structure and configuration files clearly indicate the technology stack being used.</p>
 
-                <h2>## Exploitation</h2>
+                <h2>Exploitation</h2>
                 
                 <p>Analyzing the source code, I found an interesting controller at <code>controllers/SiteController.php</code>. Inside this SiteController, there's a vulnerable function called <code>actionPaymentWebhook</code>:</p>
 
@@ -252,7 +242,7 @@ Token: &lt;?php system($_GET[0]); ?&gt;
                 <pre><code>www-data@ip-172-16-14-235:/var/www/techscope/web$ id
 uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></pre>
 
-                <h2>## Post Exploitation</h2>
+                <h2>Post Exploitation</h2>
                 
                 <p>After obtaining a shell as <code>www-data</code>, I used <code>pspy</code> to monitor running processes and discovered an interesting cron job running as root:</p>
 
@@ -326,9 +316,6 @@ uid=33(www-data) gid=33(www-data) euid=0(root) egid=0(root) groups=0(root),33(ww
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../../"></div>

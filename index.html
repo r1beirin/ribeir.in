@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <link rel="canonical" href="https://ribeir.in/" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="ribeirin — vulnerability research and ctf writeups.">
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
-    <title>Index - ribeir.in</title>
+    <title>ribeir.in</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -14,27 +15,37 @@
         <div data-component="header" data-base-path=""></div>
 
         <main>
-            <div class="welcome">
-                <p><b>welcome!</b></p>
-                
-                <p>this is a personal blog dedicated to vulnerability research and<br>
-                CTF writeups.</p>
-            </div>
+            <section class="intro">
+                <h1 class="intro-title">notes from taking things apart.</h1>
+            </section>
 
-            <div class="stats">
-                <div class="stat">
-                    <div class="stat-number">1</div>
-                    <div class="stat-label">Posts</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-number">999999</div>
-                    <div class="stat-label">Writeups</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-number">4444</div>
-                    <div class="stat-label">Coffee Cups</div>
-                </div>
-            </div>
+            <section class="latest">
+                <div class="section-label">latest writing</div>
+
+                <ul class="post-rows">
+                    <li class="post-row-item">
+                        <a class="post-row" href="posts/mathjs-sandbox-escape-rce.html">
+                            <div class="row-meta"><span class="date">2026-06-01</span><span class="row-tag">rce</span></div>
+                            <div class="row-title">Escaping the mathjs Sandbox: From math.evaluate() to Remote Code Execution</div>
+                            <div class="row-excerpt">A bug bounty program led me into the internals of mathjs 11.8.2. Two property reads in the FunctionNode and SymbolNode compilers skip the library's own safe-property allow-list, so an evaluated constructor() expression reaches the JavaScript Function constructor and turns math.evaluate() into remote code execution. Root cause, the silent 11.9.1 fix, and a reproducible local proof of concept.</div>
+                        </a>
+                    </li>
+                    <li class="post-row-item">
+                        <a class="post-row" href="posts/grafana-ssrf-datasource-proxy.html">
+                            <div class="row-meta"><span class="date">2026-03-24</span><span class="row-tag">ssrf</span></div>
+                            <div class="row-title">Grafana OSS - Full Read SSRF via Data Source Proxy</div>
+                            <div class="row-excerpt">Grafana is the most popular open-source monitoring and observability platform, used by thousands of organizations to visualize metrics, logs, and traces. During security research on the Grafana OSS codebase, I identified a full read Server-Side Request Forgery (SSRF) vulnerability/misconfiguration in the data source proxy.</div>
+                        </a>
+                    </li>
+                    <li class="post-row-item">
+                        <a class="post-row" href="posts/cve-2026-22248-glpi-rce.html">
+                            <div class="row-meta"><span class="date">2026-02-04</span><span class="row-tag">rce</span></div>
+                            <div class="row-title">CVE-2026-22248 - From File Upload to RCE via Unsafe Deserialization</div>
+                            <div class="row-excerpt">GLPI is an open-source IT asset management software used by thousands of organizations worldwide. I identified a vulnerability chain that allows an authenticated administrator to achieve Remote Code Execution (RCE) via PHP Object Injection in the progress indicator storage mechanism.</div>
+                        </a>
+                    </li>
+                </ul>
+            </section>
         </main>
 
         <div data-component="footer" data-base-path=""></div>

