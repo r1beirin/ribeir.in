@@ -41,9 +41,6 @@
 
                 <img src="../../images/hackthebox/boardlight/index.png" alt="BoardLight Machine" style="max-width: 100%; margin-bottom: 20px;">
 
-
-                <p>Straightforward easy box, but a clean chain. The foothold is a Dolibarr CRM tucked away on a subdomain that still ships default credentials and a known PHP injection. From there the whole thing is credential reuse: the DB password in <code>conf.php</code> is also a system user's password, and root falls to a SUID binary from the Enlightenment desktop that most people never think to check.</p>
-
                 <h2>Recon</h2>
 
                 <p>Starting with <code>nmap</code>. Only 22 and 80 are open, a plain Apache on Ubuntu.</p>
