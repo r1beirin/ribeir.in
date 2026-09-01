@@ -21,9 +21,33 @@
                 <span class="badge badge-htb">HTB</span>
                 <h1 class="page-title">HackTheBox</h1>
             </div>
-            <p class="page-subtitle">13 entries · web / linux</p>
+            <p class="page-subtitle">16 entries · web / linux</p>
 
             <ul class="machine-rows">
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/analytics.html">Analytics</a>
+                        <span class="diff diff-easy">easy</span>
+                        <span class="machine-date">2026-08-31</span>
+                    </div>
+                    <p class="machine-desc">Pre-auth Metabase 0.46.6 RCE via an H2 JDBC init trigger and a leaked setup-token (CVE-2023-38646) for a shell in a container, container env vars leak metalytics' reused SSH password, then the GameOver(lay) OverlayFS kernel flaw (CVE-2023-2640 / CVE-2023-32629) gives root.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/broker.html">Broker</a>
+                        <span class="diff diff-easy">easy</span>
+                        <span class="machine-date">2026-08-31</span>
+                    </div>
+                    <p class="machine-desc">Apache ActiveMQ 5.15.15 with admin:admin defaults, unauthenticated OpenWire deserialization RCE via a Spring ClassPathXmlApplicationContext bean (CVE-2023-46604) for a shell as activemq, then a sudo nginx root config with WebDAV PUT writes root's authorized_keys for root over SSH.</p>
+                </li>
+                <li class="machine-row">
+                    <div class="machine-head">
+                        <a class="machine-name" href="htb/sau.html">Sau</a>
+                        <span class="diff diff-easy">easy</span>
+                        <span class="machine-date">2026-08-31</span>
+                    </div>
+                    <p class="machine-desc">request-baskets 1.2.1 SSRF (CVE-2023-27163) proxies to an internal Maltrail 0.53, whose unauthenticated login command injection gives a shell as puma, then a sudo systemctl status pager escape spawns a root shell.</p>
+                </li>
                 <li class="machine-row">
                     <div class="machine-head">
                         <a class="machine-name" href="htb/boardlight.html">BoardLight</a>

