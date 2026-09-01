@@ -1,9 +1,17 @@
 <header>
     <a class="wordmark" href="{{BASE_PATH}}index.html">ribeirin<span class="dot">.</span></a>
-    <nav>
-        <a href="{{BASE_PATH}}index.html">home</a>
-        <a href="{{BASE_PATH}}posts.html">posts</a>
-        <a href="{{BASE_PATH}}writeups.html">writeups</a>
-        <a href="{{BASE_PATH}}about.html">about</a>
-    </nav>
+    <div class="header-right">
+        <nav>
+            <a href="{{BASE_PATH}}index.html">home</a>
+            <a href="{{BASE_PATH}}posts.html">posts</a>
+            <a href="{{BASE_PATH}}writeups.html">writeups</a>
+            <a href="{{BASE_PATH}}about.html">about</a>
+        </nav>
+        <div class="header-search" data-base-path="{{BASE_PATH}}">
+            <input type="search" class="search-input" id="site-search"
+                   placeholder="search…" autocomplete="off" spellcheck="false"
+                   aria-label="Search posts and writeups">
+            <div class="search-results hidden" id="search-results" role="listbox" aria-label="Search results"></div>
+        </div>
+    </div>
 </header>
