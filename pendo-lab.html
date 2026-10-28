@@ -116,6 +116,46 @@
     try{ pendo.identify(opts); }catch(e){}
   };
 
+  // --- Session Replay feed: DOM, console and network, all parameter-driven ---
+  // Replay captures the DOM, and (when enabled app-side) console logs and network activity.
+  // Those three are the inputs the replay AI summariser reads later, with service privilege.
+  var domText = q.get('dom');
+  if (domText !== null) {
+    var d = document.createElement('div');
+    d.className = 'box';
+    d.id = 'lab-dom-canary';
+    d.textContent = domText;          // textContent: the page itself stays safe; the STRING is what travels
+    document.body.appendChild(d);
+  }
+
+  (function feedConsole(){
+    var lines = {
+      log:   q.get('cl'),
+      warn:  q.get('cw'),
+      error: q.get('ce')
+    };
+    for (var lvl in lines) {
+      if (lines[lvl] !== null) {
+        try { console[lvl](lines[lvl]); } catch (e) {}
+      }
+    }
+    // repeatable, so a longer session carries the payload more than once
+    var n = parseInt(q.get('crep') || '0', 10);
+    for (var i = 0; i < n && i < 20; i++) {
+      try { console.log('[lab-rep-' + i + '] ' + (lines.log || 'lab')); } catch (e) {}
+    }
+  })();
+
+  (function feedNetwork(){
+    // ?nf=<path-or-url>  — the request URL (and, per Pendo's own copy, payload details) is captured
+    var nf = q.get('nf');
+    if (nf) { try { fetch(nf, { mode: 'no-cors' }).catch(function(){}); } catch (e) {} }
+    var np = q.get('np');
+    if (np) {
+      try { fetch('/lab-sink', { method: 'POST', mode: 'no-cors', body: np }).catch(function(){}); } catch (e) {}
+    }
+  })();
+
   // Status readout so the agent's own view of the world is visible from devtools.
   var st = document.getElementById('st');
   function dump(){
