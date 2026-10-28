@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>pendo lab</title>
+<style>
+  body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;max-width:880px;margin:2rem auto;padding:0 1rem;background:#0f1115;color:#d7dae0;line-height:1.6}
+  h1{font-size:1.1rem;color:#8ab4f8}
+  .box{border:1px solid #2a2f3a;border-radius:6px;padding:.75rem 1rem;margin:1rem 0;background:#151922}
+  code{color:#f0c674}
+  #st{white-space:pre-wrap;font-size:.8rem;color:#9aa3b2}
+  button{background:#1f2630;color:#d7dae0;border:1px solid #2a2f3a;border-radius:4px;padding:.4rem .8rem;cursor:pointer;margin:.2rem}
+  .lab-feature{display:inline-block;padding:.4rem .8rem;margin:.2rem;border:1px solid #2a2f3a;border-radius:4px}
+</style>
+</head>
+<body>
+
+<h1>pendo instrumentation lab</h1>
+<div class="box">
+  Authorized security-research page (Intigriti private program, Pendo). Runs the vendor's own
+  analytics snippet against a subscription I own, so the client emits genuine traffic.
+  Not part of the site; noindex. Every value below is supplied via URL parameters.
+</div>
+
+<!-- Elements that exist so operator-side feature tagging has something to bind to -->
+<div class="box">
+  <div id="lab-zone-a" class="lab-feature" data-lab="a">lab button A</div>
+  <div id="lab-zone-b" class="lab-feature" data-lab="b">lab button B</div>
+  <button id="lab-track">fire track event</button>
+  <button id="lab-nav">pageLoad (vary URL)</button>
+  <button id="lab-id">re-identify</button>
+</div>
+
+<div class="box"><div id="st">booting…</div></div>
+
+<script>
+(function(){
+  var q = new URLSearchParams(location.search);
+  function p(k, d){ var v = q.get(k); return (v === null || v === "") ? d : v; }
+
+  // Title is captured by the agent at page load, so set it before the agent boots.
+  var title = p('t', null);
+  if (title !== null) { document.title = title; }
+
+  var vid = p('vid', 's44-v1');
+  var aid = p('aid', 's44-a1');
+
+  var visitor = { id: vid };
+  var account = { id: aid };
+
+  // Named convenience params for the standard metadata fields.
+  var vmap = { vn:'full_name', ve:'email', vr:'role', vph:'phone', vc:'country', vlang:'language' };
+  for (var k in vmap){ var v = q.get(k); if (v !== null) visitor[vmap[k]] = v; }
+  var amap = { an:'name', apl:'planLevel', amrr:'monthly_value', act:'creationDate' };
+  for (var k2 in amap){ var v2 = q.get(k2); if (v2 !== null) account[amap[k2]] = v2; }
+
+  // Arbitrary agent-supplied keys: ?mk=<key>&mv=<value> (repeatable), visitor scope.
+  var mk = q.getAll('mk'), mv = q.getAll('mv');
+  for (var i = 0; i < mk.length; i++){ visitor[mk[i]] = (mv[i] === undefined ? '' : mv[i]); }
+  // Same for the account scope: ?amk=&amv=
+  var amk = q.getAll('amk'), amv = q.getAll('amv');
+  for (var i2 = 0; i2 < amk.length; i2++){ account[amk[i2]] = (amv[i2] === undefined ? '' : amv[i2]); }
+
+  var opts = { visitor: visitor, account: account };
+
+  // Full control of the init object without redeploying: ?j=<base64url(JSON)> is deep-merged last.
+  var j = q.get('j');
+  if (j){
+    try{
+      var pad = j.replace(/-/g,'+').replace(/_/g,'/');
+      while (pad.length % 4) pad += '=';
+      var extra = JSON.parse(decodeURIComponent(escape(atob(pad))));
+      (function merge(dst, src){
+        for (var kk in src){
+          if (src[kk] && typeof src[kk] === 'object' && !Array.isArray(src[kk])){
+            dst[kk] = dst[kk] || {}; merge(dst[kk], src[kk]);
+          } else { dst[kk] = src[kk]; }
+        }
+      })(opts, extra);
+    }catch(e){ /* reported in status below */ }
+  }
+
+  window.__labOpts = opts;
+
+  // ---- the vendor's own snippet, unmodified apart from the key coming from a variable ----
+  (function(apiKey){
+    (function(P,E,N,D,O){O=P[D]=P[D]||{};O._q=O._q||[];
+      var V=['initialize','identify','updateOptions','pageLoad','track','flushNow','getVisitorId','getAccountId','getSerializedMetadata','isReady'],W,X,Y,Z;
+      for(W=0,X=V.length;W<X;++W)(function(m){O[m]=O[m]||function(){O._q[m===V[0]?'unshift':'push']([m].concat([].slice.call(arguments,0)));};})(V[W]);
+      Y=E.createElement(N);Y.async=!0;Y.src='https://cdn.pendo.io/agent/static/'+apiKey+'/pendo.js';
+      Z=E.getElementsByTagName(N)[0];Z.parentNode.insertBefore(Y,Z);})(window,document,'script','pendo');
+    pendo.initialize(opts);
+  })('b615304a-7da2-4f7b-ab9a-92fdf9ca0126');
+
+  // Optional immediate track event: ?ev=<name>&ep=<prop value>
+  var ev = q.get('ev');
+  if (ev){
+    var props = {};
+    var epk = q.getAll('epk'), epv = q.getAll('epv');
+    for (var i3 = 0; i3 < epk.length; i3++){ props[epk[i3]] = (epv[i3] === undefined ? '' : epv[i3]); }
+    var ep = q.get('ep'); if (ep !== null) props.lab_prop = ep;
+    try{ pendo.track(ev, props); }catch(e){}
+  }
+
+  document.getElementById('lab-track').onclick = function(){
+    try{ pendo.track(p('ev','lab_manual_event'), { lab_prop: p('ep','manual'), ts: Date.now() }); }catch(e){}
+  };
+  document.getElementById('lab-nav').onclick = function(){
+    var n = '/pendo-lab.html?p=' + encodeURIComponent(p('p','v') + '-' + Date.now());
+    history.pushState({}, '', n);
+    try{ pendo.pageLoad(); }catch(e){}
+  };
+  document.getElementById('lab-id').onclick = function(){
+    try{ pendo.identify(opts); }catch(e){}
+  };
+
+  // Status readout so the agent's own view of the world is visible from devtools.
+  var st = document.getElementById('st');
+  function dump(){
+    var lines = [];
+    lines.push('title   : ' + document.title);
+    lines.push('url     : ' + location.href);
+    lines.push('sent    : ' + JSON.stringify(opts));
+    try{
+      lines.push('ready   : ' + (window.pendo && pendo.isReady ? pendo.isReady() : 'n/a'));
+      lines.push('visitor : ' + (window.pendo && pendo.getVisitorId ? pendo.getVisitorId() : 'n/a'));
+      lines.push('account : ' + (window.pendo && pendo.getAccountId ? pendo.getAccountId() : 'n/a'));
+      lines.push('agentver: ' + (window.pendo && pendo.VERSION ? pendo.VERSION : 'n/a'));
+      lines.push('apikey  : ' + (window.pendo && pendo.apiKey ? pendo.apiKey : 'n/a'));
+    }catch(e){ lines.push('err     : ' + e.message); }
+    st.textContent = lines.join('\n');
+  }
+  dump(); setInterval(dump, 1500);
+})();
+</script>
+</body>
+</html>
